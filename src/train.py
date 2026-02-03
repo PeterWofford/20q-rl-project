@@ -15,8 +15,6 @@ import wandb
 import argparse
 import asyncio
 import random
-from dotenv import load_dotenv
-
 import art
 import weave
 from art.local import LocalBackend
@@ -31,8 +29,25 @@ import os
 # Suppress Pydantic serialization warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
-# Load environment variables
-load_dotenv()
+# --- 🚨 CRITICAL FIX: PATCH vLLM MEMORY 🚨 ---
+# The environment variable is ignored by the Python API, so we patch the class default directly.
+try:
+    import dataclasses
+    from vllm.engine.arg_utils import EngineArgs, AsyncEngineArgs # type: ignore
+    
+    print("🩹 Patching vLLM memory utilization to 0.4...")
+    # Force both Synchronous and Asynchronous engines to default to 40%
+    for cls in [EngineArgs, AsyncEngineArgs]:
+        for f in dataclasses.fields(cls):
+            if f.name == "gpu_memory_utilization":
+                f.default = 0.4
+except ImportError:
+    print("⚠️ Could not patch vLLM: modules not found (this is normal if vLLM isn't loaded yet)")
+except Exception as e:
+    print(f"⚠️ Failed to patch vLLM: {e}")
+# ---------------------------------------------
+
+
 random.seed(42)
 
 
