@@ -11,3 +11,10 @@ AGENT_002_CONFIG = {
     "reward_fn": "v2",
     "learning_rate": 1e-5,
 }
+
+AGENT_002_V2_CONFIG = {
+    "name": "20q-agent-002-v2", 
+    "project": "20q",
+    "reward_fn": "v3",  # Use v3!
+    "learning_rate": 1e-5,
+}

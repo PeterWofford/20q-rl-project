@@ -10,7 +10,7 @@ from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
 from environment import rollout, Scenario20Q, objects
-from configs import AGENT_001_CONFIG, AGENT_002_CONFIG
+from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG
 
 import warnings
 import os
@@ -26,13 +26,18 @@ random.seed(42)
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="002", choices=["001", "002"])
+    parser.add_argument("--agent", default="002", choices=["001", "002", "002-v2"])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=12)
     args = parser.parse_args()
     
     # Load config based on agent
-    config = AGENT_002_CONFIG if args.agent == "002" else AGENT_001_CONFIG
+    if args.agent == "001":
+        config = AGENT_001_CONFIG
+    elif args.agent == "002-v2":
+        config = AGENT_002_V2_CONFIG
+    else:
+        config = AGENT_002_CONFIG
 
     # Set consistent WandB run ID to prevent fragmentation
     import os

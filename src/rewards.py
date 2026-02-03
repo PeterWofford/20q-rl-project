@@ -56,8 +56,38 @@ def compute_reward_v2(ep: 'TwentyQuestionsEpisode') -> float:
 
     return r
 
+def compute_reward_v3(ep: 'TwentyQuestionsEpisode') -> float:
+    """v3: Stronger incentives for narrowing + correct guessing"""
+    QUESTION_COST = 0.01  # Reduced from 0.02 - make questions cheaper
+    UNKNOWN_ATTR_PENALTY = 0.30  # Increased from 0.20 - punish invalid questions harder
+    CORRECT_REWARD = 5.0  # Increased from 2.0 - BIG reward for correct guess
+    WRONG_REWARD = -3.0  # Increased penalty from -2.0
+    TIMEOUT_REWARD = -3.0  # Increased penalty from -2.0
+    N0 = 76
+    NARROW_BONUS = 1.0  # Increased from 0.6 - reward narrowing more
+
+    r = 0.0
+    r -= QUESTION_COST * ep["questions_asked"]
+    r -= UNKNOWN_ATTR_PENALTY * ep["invalid_questions"]
+
+    # Reward narrowing (logarithmic)
+    N = max(1, len(ep["candidates"]))
+    r += NARROW_BONUS * (1.0 - (math.log(N) / math.log(N0)))
+
+    if not check_episode_finished(ep):
+        return r
+
+    if ep["guessed_id"] is None:
+        r += TIMEOUT_REWARD
+    else:
+        r += CORRECT_REWARD if (ep["guessed_id"] == ep["secret_id"]) else WRONG_REWARD
+
+    return r
+
 def compute_reward(ep: 'TwentyQuestionsEpisode') -> float:
-    """Dispatch to correct reward function based on episode config"""
+    """Dispatch to correct reward function"""
     if ep.get('reward_fn') == 'v1':
         return compute_reward_v1(ep)
-    return compute_reward_v2(ep)
+    elif ep.get('reward_fn') == 'v3':
+        return compute_reward_v3(ep)
+    return compute_reward_v2(ep)  # default to v2
