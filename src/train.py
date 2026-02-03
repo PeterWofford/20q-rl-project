@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 import art
 import weave
-from art.serverless.backend import LocalBackend
+from art.local import LocalBackend
 from art.utils.strip_logprobs import strip_logprobs
 
 from environment import rollout, Scenario20Q, objects
