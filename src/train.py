@@ -20,6 +20,8 @@ import art
 import weave
 from art.local import LocalBackend
 from art.utils.strip_logprobs import strip_logprobs
+from art.dev import InternalModelConfig, EngineArgs
+
 
 from environment import rollout, Scenario20Q, objects
 from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG
@@ -61,10 +63,12 @@ async def main():
         name=config["name"],
         project=config["project"],
         base_model="OpenPipe/Qwen3-14B-Instruct",
+        _internal_config=InternalModelConfig(
+            engine_args=EngineArgs(
+                gpu_memory_utilization=0.45, # get around vllm memory issues
+            )
+        ),
     )
-    
-    backend = LocalBackend()
-    await model.register(backend)
     
     # Prepare secrets for training
     secrets = [o["id"] for o in objects]
