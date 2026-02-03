@@ -10,6 +10,9 @@ os.environ["WANDB_MODE"] = "offline"
 os.environ["WANDB_SILENT"] = "true"
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 
+# Tell vLLM to only use 60% of the GPU (since the model weights already took ~30-40%)
+os.environ["VLLM_GPU_MEMORY_UTILIZATION"] = "0.6"
+
 import wandb
 import argparse
 import asyncio
