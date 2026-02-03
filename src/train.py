@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 import art
 import weave
-from art.serverless.backend import ServerlessBackend
+from art.serverless.backend import LocalBackend
 from art.utils.strip_logprobs import strip_logprobs
 
 from environment import rollout, Scenario20Q, objects
@@ -58,7 +58,7 @@ async def main():
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
     
-    backend = ServerlessBackend()
+    backend = LocalBackend()
     await model.register(backend)
     
     # Prepare secrets for training
