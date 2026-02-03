@@ -19,9 +19,8 @@ import random
 import art
 import weave
 from art.local import LocalBackend
-from art.utils.strip_logprobs import strip_logprobs
 from art.dev import InternalModelConfig, EngineArgs
-
+from art.utils.strip_logprobs import strip_logprobs
 
 from environment import rollout, Scenario20Q, objects
 from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG
@@ -58,7 +57,7 @@ async def main():
         global_postprocess_output=strip_logprobs
     )
     
-    # Create model
+     # Create model
     model = art.TrainableModel(
         name=config["name"],
         project=config["project"],
@@ -69,6 +68,9 @@ async def main():
             )
         ),
     )
+    
+    backend = LocalBackend()
+    await model.register(backend)
     
     # Prepare secrets for training
     secrets = [o["id"] for o in objects]
