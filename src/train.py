@@ -1,20 +1,21 @@
 import os
+import warnings
 from dotenv import load_dotenv
 
 # 1. Load env vars (API keys)
 load_dotenv()
 
-# 2. FORCE OFFLINE MODE (Must be before importing wandb/weave/art)
-# This guarantees no background processes try to phone home.
+# 2. FORCE OFFLINE MODE
+# We set this in Python to ensure the script never accidentally runs online,
+# preventing network timeouts on your rented A100.
 os.environ["WANDB_MODE"] = "offline" 
 os.environ["WANDB_SILENT"] = "true"
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
-os.environ["VLLM_GPU_MEMORY_UTILIZATION"] = "0.4"
 
-import wandb
 import argparse
 import asyncio
 import random
+
 import art
 import weave
 from art.local import LocalBackend
@@ -23,30 +24,8 @@ from art.utils.strip_logprobs import strip_logprobs
 from environment import rollout, Scenario20Q, objects
 from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG
 
-import warnings
-import os
-
 # Suppress Pydantic serialization warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
-
-# --- 🚨 CRITICAL FIX: PATCH vLLM MEMORY 🚨 ---
-# The environment variable is ignored by the Python API, so we patch the class default directly.
-try:
-    import dataclasses
-    from vllm.engine.arg_utils import EngineArgs, AsyncEngineArgs # type: ignore
-    
-    print("🩹 Patching vLLM memory utilization to 0.4...")
-    # Force both Synchronous and Asynchronous engines to default to 40%
-    for cls in [EngineArgs, AsyncEngineArgs]:
-        for f in dataclasses.fields(cls):
-            if f.name == "gpu_memory_utilization":
-                f.default = 0.4
-except ImportError:
-    print("⚠️ Could not patch vLLM: modules not found (this is normal if vLLM isn't loaded yet)")
-except Exception as e:
-    print(f"⚠️ Failed to patch vLLM: {e}")
-# ---------------------------------------------
-
 
 random.seed(42)
 
