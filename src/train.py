@@ -1,3 +1,15 @@
+import os
+from dotenv import load_dotenv
+
+# 1. Load env vars (API keys)
+load_dotenv()
+
+# 2. FORCE OFFLINE MODE (Must be before importing wandb/weave/art)
+# This guarantees no background processes try to phone home.
+os.environ["WANDB_MODE"] = "offline" 
+os.environ["WANDB_SILENT"] = "true"
+os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
+
 import wandb
 import argparse
 import asyncio
@@ -17,7 +29,6 @@ import os
 
 # Suppress Pydantic serialization warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
-os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 
 # Load environment variables
 load_dotenv()
@@ -40,14 +51,8 @@ async def main():
         config = AGENT_002_CONFIG
 
     # Set consistent WandB run ID to prevent fragmentation
-    import os
     os.environ["WANDB_RUN_ID"] = config["name"]  # Use model name as run ID
     os.environ["WANDB_RESUME"] = "allow"         # Resume if exists, create if not
-
-    # FORCE OFFLINE MODE
-    # This prevents network timeouts from crashing the training loop
-    os.environ["WANDB_MODE"] = "offline" 
-    os.environ["WANDB_SILENT"] = "true"
 
     # Initialize Weave
     weave.init(
