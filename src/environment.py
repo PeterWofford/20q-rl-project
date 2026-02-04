@@ -65,22 +65,23 @@ def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Op
 
 
 def render_state(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj]) -> str:
-    # Like render_board(): human-readable debugging output
     cand_count = len(ep["candidates"])
     last_q = ep["last_question"] or "-"
     last_a = ep["last_answer"] or "-"
-    guessed = ep["guessed_id"] or "-"
-    # show a few candidate names for transparency
-    sample = ep["candidates"][:10]
+    
+    # Show top candidates if few remain
+    if cand_count <= 10:
+        sample = ep["candidates"][:cand_count]
+    else:
+        sample = random.sample(ep["candidates"], 5)
+    
     sample_names = [objects_by_id[oid]["name"] for oid in sample]
+    
     return (
-        f"Episode {ep['id']}\n"
-        f"Candidates remaining: {cand_count}\n"
-        f"Questions asked: {ep['questions_asked']} (invalid: {ep['invalid_questions']})\n"
-        f"Last Q: {last_q}\n"
-        f"Last A: {last_a}\n"
-        f"Guessed: {guessed}\n"
-        f"Sample candidates: {sample_names}\n"
+        f"Candidates: {cand_count}\n"
+        f"Questions: {ep['questions_asked']}/15\n"
+        f"Last Q: {last_q} → {last_a}\n"
+        f"Top candidates: {', '.join(sample_names)}"
     )
 
 
@@ -196,21 +197,31 @@ class Scenario20Q(BaseModel):
     secret_id: str
     reward_fn: str = "v2"  # Default to v2
 
-SYSTEM_20Q = """You are playing 20 Questions using tool calls.
+SYSTEM_20Q = """You are playing 20 Questions to identify a secret object.
 
-Goal: identify the secret object efficiently.
+STRATEGY:
+1. Start by asking about broad categories (is_animal, is_food, is_vehicle, etc.)
+2. Use binary search: each question should eliminate ~half the candidates
+3. When candidates < 5, use get_top_candidates to see options
+4. Only submit_guess when you're confident (candidates ≤ 3 and you know the answer)
 
-You MUST use tools:
-- list_attributes()
-- ask_yesno(attr_name)
-- (optional) get_candidate_count(), get_top_candidates(k)
-- submit_guess(object_id)
+TOOLS AVAILABLE:
+- list_attributes(): See all queryable attributes
+- ask_yesno(attr_name): Ask if secret has this attribute (costs 0.01 reward)
+- get_candidate_count(): Check how many possibilities remain
+- get_top_candidates(k): See the top k remaining candidates
+- submit_guess(object_id): Make your final guess (use object ID, not name)
 
-Be efficient: each ask_yesno has a cost.
-Only call submit_guess when confident.
+RULES:
+- Each question costs reward, so be efficient
+- Invalid attribute names are heavily penalized
+- Correct guess = +5 reward, wrong = -3 reward
+- You have maximum 15 questions
+
+BE STRATEGIC: Narrow down systematically before guessing!
 """
 
-@weave.op
+# @weave.op #DISABLE WEAVE TO SAVE COSTS
 @art.retry(exceptions=(requests.ReadTimeout,))
 async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     client = AsyncOpenAI(
