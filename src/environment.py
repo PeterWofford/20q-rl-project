@@ -1,6 +1,7 @@
 import json
 import random
 import string
+import openai
 import math
 from typing import TypedDict, Optional, Literal
 from pydantic import BaseModel
@@ -222,7 +223,7 @@ BE STRATEGIC: Narrow down systematically before guessing!
 """
 
 # @weave.op #DISABLE WEAVE TO SAVE COSTS
-@art.retry(exceptions=(requests.ReadTimeout,))
+@art.retry(exceptions=(requests.ReadTimeout, openai.InternalServerError, openai.APIError, openai.APIConnectionError))
 async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     client = AsyncOpenAI(
         base_url=model.inference_base_url,
