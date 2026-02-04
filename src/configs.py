@@ -47,7 +47,6 @@ AGENT_005_CONFIG = {
 }
 
 def get_agent_config(version: str):
-    config
     # Load config based on agent
     if version == "001":
         config = AGENT_001_CONFIG
