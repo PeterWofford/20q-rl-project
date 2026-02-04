@@ -68,7 +68,8 @@ You must output ONLY valid tool calls.
 GAME STATE:
 - Total Attributes: 57 (fixed list).
 - Max Questions: 15.
-- Costs: Invalid names are expensive (-0.5). Wrong guesses are expensive (-5). Not guessing is catastrophic (-8).
+- Costs: Invalid names are expensive (-0.5). Wrong guesses are horrible (-15). Not guessing is bad (-5).
+- Rewards: Correct guesses give +20. Narrowing down the set of objects also gives rewards.
 
 OPTIMAL EXECUTION PATH:
 

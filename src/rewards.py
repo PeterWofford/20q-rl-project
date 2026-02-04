@@ -112,6 +112,54 @@ def compute_reward_v4(ep: 'TwentyQuestionsEpisode') -> float:
     
     return r
 
+def compute_reward_v5(ep: 'TwentyQuestionsEpisode') -> float:
+    """v5: Heavily incentivize narrowing, punish gambling"""
+    
+    # 1. MAKE QUESTIONS CHEAP (OR FREE)
+    # We want it to ask questions. Don't tax the behavior you want to see.
+    QUESTION_COST = 0.01 
+    
+    # 2. PUNISH BLIND GUESSING HARDER THAN TIMEOUT
+    # If it times out, it tried. If it guesses wrong, it failed logic.
+    WRONG_REWARD = -15.0  # Make this painful enough to prevent early gambling
+    TIMEOUT_PENALTY = -5.0 # Bad, but better than being confidently wrong
+    
+    # 3. MASSIVE POT OF GOLD
+    CORRECT_REWARD = 20.0 
+    
+    # 4. INCREASE THE BREADCRUMBS (NARROWING)
+    # This is the most important part for RL. It needs frequent positive feedback.
+    N0 = 76
+    # Boost this so a good question feels like a "mini-win"
+    NARROW_BONUS = 2.0 
+    
+    UNKNOWN_ATTR_PENALTY = 0.5
+    
+    r = 0.0
+    r -= QUESTION_COST * ep["questions_asked"]
+    r -= UNKNOWN_ATTR_PENALTY * ep["invalid_questions"]
+    
+    # Calculate Narrowing Bonus
+    # We only reward if candidates actually decreased
+    prev_N = ep.get("prev_candidate_count", N0) # You'll need to track this in your env
+    curr_N = max(1, len(ep["candidates"]))
+    
+    # If we eliminated candidates, give a log-scaled reward
+    if curr_N < prev_N:
+         # Higher reward for narrowing down from 5 to 2 than 76 to 38
+        r += NARROW_BONUS * (math.log(prev_N) - math.log(curr_N))
+    
+    if not check_episode_finished(ep):
+        return r
+    
+    if ep["guessed_id"] is None:
+        r += TIMEOUT_PENALTY
+    else:
+        # If they guess, it's either Glory (+20) or Death (-15)
+        r += CORRECT_REWARD if (ep["guessed_id"] == ep["secret_id"]) else WRONG_REWARD
+    
+    return r
+
 def compute_reward(ep: 'TwentyQuestionsEpisode') -> float:
     """Dispatch to correct reward function"""
     if ep.get('reward_fn') == 'v1':
@@ -120,4 +168,6 @@ def compute_reward(ep: 'TwentyQuestionsEpisode') -> float:
         return compute_reward_v3(ep)
     elif ep.get('reward_fn') == 'v4':
         return compute_reward_v4(ep)
+    elif ep.get('reward_fn') == 'v5':
+        return compute_reward_v5(ep)
     return compute_reward_v2(ep)  # default to v2

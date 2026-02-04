@@ -41,7 +41,26 @@ AGENT_004_CONFIG = {
 AGENT_005_CONFIG = {
     "name": "20q-agent-004", 
     "project": "20q",
-    "reward_fn": "v4",  
+    "reward_fn": "v5",  
     "prompt_version": "v4", # Use v4 to help prevent attribute hallucination
     "learning_rate": 1e-5,
 }
+
+def get_agent_config(version: str):
+    config
+    # Load config based on agent
+    if version == "001":
+        config = AGENT_001_CONFIG
+    elif version == "002":
+        config = AGENT_002_CONFIG
+    elif version == "002-v2":
+        config = AGENT_002_V2_CONFIG
+    elif version == "002-v3":
+        config = AGENT_002_V3_CONFIG
+    elif version == "004":
+        config = AGENT_004_CONFIG
+    elif version == "005":
+        config = AGENT_005_CONFIG
+    else:
+        config = AGENT_005_CONFIG #default
+    return config
