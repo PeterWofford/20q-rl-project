@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 import art
 # import weave
 from rewards import compute_reward
+from prompts import get_system_prompt
 
 MAX_QUESTIONS = 15  # analogous to lowering WINNING_VALUE in 2048
 
@@ -45,7 +46,7 @@ def _rand_id(k: int = 6) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=k))
 
 
-def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: string = 'v2') -> TwentyQuestionsEpisode:
+def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: string = 'v2',prompt_version: str = "v4") -> TwentyQuestionsEpisode:
     eid = _rand_id()
     if secret_id is None:
         secret_id = random.choice(objects)["id"]
@@ -61,7 +62,8 @@ def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Op
         "done": False,
         "guessed_id": None,
         "qa_pairs": [], # lightweight q/a trace log
-        "reward_fn": reward_fn
+        "reward_fn": reward_fn,
+        prompt_version: prompt_version
     }
 
 
@@ -197,30 +199,7 @@ class Scenario20Q(BaseModel):
     step: int
     secret_id: str
     reward_fn: str = "v2"  # Default to v2
-
-SYSTEM_20Q = """You are playing 20 Questions to identify a secret object.
-
-STRATEGY:
-1. Start by asking about broad categories (is_animal, is_food, is_vehicle, etc.)
-2. Use binary search: each question should eliminate ~half the candidates
-3. When candidates < 5, use get_top_candidates to see options
-4. Only submit_guess when you're confident (candidates ≤ 3 and you know the answer)
-
-TOOLS AVAILABLE:
-- list_attributes(): See all queryable attributes
-- ask_yesno(attr_name): Ask if secret has this attribute (costs 0.01 reward)
-- get_candidate_count(): Check how many possibilities remain
-- get_top_candidates(k): See the top k remaining candidates
-- submit_guess(object_id): Make your final guess (use object ID, not name)
-
-RULES:
-- Each question costs reward, so be efficient
-- Invalid attribute names are heavily penalized
-- Correct guess = +5 reward, wrong = -3 reward
-- You have maximum 15 questions
-
-BE STRATEGIC: Narrow down systematically before guessing!
-"""
+    prompt_version: str = "v4" # Default to v4
 
 # @weave.op #DISABLE WEAVE TO SAVE COSTS
 @art.retry(exceptions=(requests.ReadTimeout, openai.InternalServerError, openai.APIError, openai.APIConnectionError))
@@ -230,16 +209,21 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
         api_key=model.inference_api_key,
     )
 
+   # Get prompt version from config (passed through scenario)
+    prompt_version = scenario.prompt_version if hasattr(scenario, 'prompt_version') else "v4"
+    system_prompt = get_system_prompt(prompt_version)
+    
     ep = generate_episode(
         objects, 
         attributes, 
         secret_id=scenario.secret_id,
-        reward_fn=scenario.reward_fn  # Pass reward func through
+        reward_fn=scenario.reward_fn, # pass reward_fn
+        prompt_version=prompt_version # pass prompt_version
     )
 
     trajectory = art.Trajectory(
         messages_and_choices=[
-            {"role": "system", "content": SYSTEM_20Q},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": "Find the secret object. Start by calling list_attributes()."},
         ],
         metadata={

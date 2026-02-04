@@ -265,7 +265,8 @@ async def main():
                         Scenario20Q(
                             step=i, 
                             secret_id=sid,
-                            reward_fn=config["reward_fn"]
+                            reward_fn=config["reward_fn"],
+                            prompt_version=config["prompt_version"]
                         )
                     ) 
                     for _ in range(10)

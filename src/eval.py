@@ -4,21 +4,24 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import os
 
-from environment import Scenario20Q, objects, load_catalog, generate_episode, ask_yesno, submit_guess, check_episode_finished, tool_schemas, objects_by_id, attributes, SYSTEM_20Q
+from environment import objects, load_catalog, generate_episode, ask_yesno, submit_guess, check_episode_finished, tool_schemas, objects_by_id, attributes, SYSTEM_20Q
+from prompts import get_system_prompt
 import json
 
 load_dotenv()
 random.seed(42)
 
 
-async def rollout_frontier_model(model_name: str, api_key: str, secret_id: str, max_steps: int = 25):
+async def rollout_frontier_model(model_name: str, api_key: str, secret_id: str, prompt_version: str = "v4", max_steps: int = 25):
     """Run a single episode with a frontier model"""
     client = AsyncOpenAI(api_key=api_key)
     
-    ep = generate_episode(objects, attributes, secret_id=secret_id, reward_fn="v3")
+    system_prompt = get_system_prompt(prompt_version)
+    
+    ep = generate_episode(objects, attributes, secret_id=secret_id, reward_fn="v4", prompt_version=prompt_version)
     
     messages = [
-        {"role": "system", "content": SYSTEM_20Q},
+        {"role": "system", "content": system_prompt},  # Use versioned prompt
         {"role": "user", "content": "Find the secret object. Start by calling list_attributes()."}
     ]
     
