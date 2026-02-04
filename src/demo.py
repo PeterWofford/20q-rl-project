@@ -6,8 +6,9 @@ from art.serverless.backend import ServerlessBackend
 
 from environment import (
     generate_episode, ask_yesno, submit_guess, check_episode_finished,
-    tool_schemas, objects_by_id, attributes, SYSTEM_20Q, objects, render_state
+    tool_schemas, objects_by_id, attributes, objects, render_state
 )
+from prompts import get_system_prompt
 from openai import AsyncOpenAI
 import json
 
@@ -39,16 +40,20 @@ async def watch_model_play(model_name: str, secret_id: str = None):
     secret_obj = objects_by_id[secret_id]
     
     print(f"\n{'='*70}")
-    print(f"🎮 WATCHING MODEL PLAY 20 QUESTIONS")
+    print(f"🎮 WATCHING MODEL {model_name} PLAY 20 QUESTIONS")
     print(f"{'='*70}")
     print(f"🎯 Secret object: {secret_obj['name']} (ID: {secret_id})")
     print(f"📝 Attributes: {', '.join([k for k, v in secret_obj['attrs'].items() if v])}")
     print(f"{'='*70}\n")
     
-    ep = generate_episode(objects, attributes, secret_id=secret_id, reward_fn="v3")
+    # Use standard V5 config for inference
+    ep = generate_episode(objects, attributes, secret_id=secret_id, reward_fn="v5", prompt_version="v4")
     
+    # Get the correct system prompt
+    system_prompt = get_system_prompt("v4")
+
     messages = [
-        {"role": "system", "content": SYSTEM_20Q},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": "Find the secret object. Start by calling list_attributes()."}
     ]
     
@@ -155,7 +160,7 @@ async def watch_model_play(model_name: str, secret_id: str = None):
 async def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="20q-agent-002-v2", help="Model name to watch")
+    parser.add_argument("--agent", default="20q-agent-007-oracle", help="Model name to watch")
     parser.add_argument("--secret", default=None, help="Specific secret ID (optional)")
     parser.add_argument("--runs", type=int, default=1, help="Number of episodes to watch")
     args = parser.parse_args()

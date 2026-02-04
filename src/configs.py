@@ -54,6 +54,14 @@ AGENT_005_V2_CONFIG = {
     "learning_rate": 1e-5,
 }
 
+AGENT_006_CONFIG = {
+    "name": "20q-agent-007-oracle", 
+    "project": "20q",
+    "reward_fn": "v5",           # High stakes reward (doesn't matter much since Oracle is perfect)
+    "prompt_version": "v4",
+    "learning_rate": 1e-5,
+}
+
 def get_agent_config(version: str):
     # Load config based on agent
     if version == "001":
@@ -68,6 +76,8 @@ def get_agent_config(version: str):
         config = AGENT_004_CONFIG
     elif version == "005":
         config = AGENT_005_CONFIG
-    else:
+    elif version == "005-v2":
         config = AGENT_005_V2_CONFIG #default
+    else:
+        config = AGENT_006_CONFIG #oracle default
     return config

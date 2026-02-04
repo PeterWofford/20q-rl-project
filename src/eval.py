@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 import os
 
-from environment import objects, load_catalog, generate_episode, ask_yesno, submit_guess, check_episode_finished, tool_schemas, objects_by_id, attributes, SYSTEM_20Q
+from environment import objects, load_catalog, generate_episode, ask_yesno, submit_guess, check_episode_finished, tool_schemas, objects_by_id, attributes
 from prompts import get_system_prompt
 import json
 
@@ -33,7 +33,7 @@ async def rollout_frontier_model(model_name: str, api_key: str, secret_id: str, 
             messages=messages,
             tools=tool_schemas(),
             tool_choice="auto",
-            max_tokens=256,
+            max_completion_tokens=256,
         )
         
         choice = chat.choices[0]
@@ -167,9 +167,7 @@ async def main():
     
     # Benchmark frontier models
     models = [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4-turbo",
+        "gpt-5.2"
     ]
     
     all_results = {}
