@@ -25,3 +25,10 @@ AGENT_002_V3_CONFIG = {
     "reward_fn": "v3",  # Use v3!
     "learning_rate": 1e-5,
 }
+
+AGENT_004_CONFIG = {
+    "name": "20q-agent-004", 
+    "project": "20q",
+    "reward_fn": "v4",  # Use v4 since v3 appeared to degenerate to timeouts
+    "learning_rate": 1e-5,
+}

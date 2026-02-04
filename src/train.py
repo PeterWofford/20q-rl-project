@@ -10,7 +10,7 @@ from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
 from environment import rollout, Scenario20Q, objects
-from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG, AGENT_002_V3_CONFIG
+from configs import AGENT_001_CONFIG, AGENT_002_CONFIG, AGENT_002_V2_CONFIG, AGENT_002_V3_CONFIG, AGENT_004_CONFIG
 
 import warnings
 import os
@@ -33,7 +33,6 @@ training_stats = {
 import json
 from datetime import datetime
 
-# At the top of train.py, after imports
 training_stats = {
     "attempted": 0,
     "successful": 0,
@@ -198,7 +197,7 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str, n_episod
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="002-v3", choices=["001", "002", "002-v2", "002-v3"])
+    parser.add_argument("--agent", default="002-v3", choices=["001", "002", "002-v2", "002-v3", "004"])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=12)
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
@@ -211,6 +210,8 @@ async def main():
         config = AGENT_002_V2_CONFIG
     elif args.agent == "002-v3":
         config = AGENT_002_V3_CONFIG
+    elif args.agent == "004":
+        config = AGENT_004_CONFIG
     else:
         config = AGENT_002_CONFIG
 
