@@ -39,9 +39,9 @@ AGENT_004_CONFIG = {
 }
 
 AGENT_005_CONFIG = {
-    "name": "20q-agent-004", 
+    "name": "20q-agent-005", 
     "project": "20q",
-    "reward_fn": "v5",  
+    "reward_fn": "v5",  # try v5 to prevent suicide guessing and use new narrowing bonus
     "prompt_version": "v4", # Use v4 to help prevent attribute hallucination
     "learning_rate": 1e-5,
 }
