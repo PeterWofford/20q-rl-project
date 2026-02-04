@@ -23,8 +23,51 @@ os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 load_dotenv()
 random.seed(42)
 
-async def train_with_retry(backend, model, train_groups, config, max_retries=5):
-    """Train with exponential backoff on 502 errors"""
+# At the top of train.py
+training_stats = {
+    "attempted": 0,
+    "successful": 0,
+    "failed": 0,
+    "failure_reasons": {}
+}
+import json
+from datetime import datetime
+
+# At the top of train.py, after imports
+training_stats = {
+    "attempted": 0,
+    "successful": 0,
+    "failed": 0,
+    "failure_reasons": {},
+    "steps": []
+}
+
+STATS_FILE = "training_stats.jsonl"
+
+
+def log_step_result(step: int, success: bool, error: str = None):
+    """Log training step result to file"""
+    result = {
+        "timestamp": datetime.now().isoformat(),
+        "step": step,
+        "success": success,
+        "error": error,
+        "cumulative_attempted": training_stats["attempted"],
+        "cumulative_successful": training_stats["successful"],
+        "cumulative_failed": training_stats["failed"],
+        "success_rate": training_stats["successful"] / training_stats["attempted"] if training_stats["attempted"] > 0 else 0
+    }
+    
+    with open(STATS_FILE, "a") as f:
+        f.write(json.dumps(result) + "\n")
+    
+    return result
+
+
+async def train_with_retry(backend, model, train_groups, config, step_num: int, max_retries=5):
+    """Train with exponential backoff on 502/524 errors"""
+    training_stats["attempted"] += 1
+    
     for attempt in range(max_retries):
         try:
             result = await backend.train(
@@ -33,18 +76,58 @@ async def train_with_retry(backend, model, train_groups, config, max_retries=5):
                 learning_rate=config["learning_rate"]
             )
             await model.log(train_groups, metrics=result.metrics, step=result.step, split='train')
+            
+            # Success!
+            training_stats["successful"] += 1
+            log_step_result(step_num, success=True)
+            print(f"✅ Step {step_num} complete!")
             return result
+            
         except Exception as e:
             error_str = str(e)
-            if "502" in error_str or "Bad Gateway" in error_str or "gateway" in error_str.lower():
-                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                print(f"⚠️  502 error on attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-                if attempt == max_retries - 1:
-                    print(f"❌ Failed after {max_retries} attempts. Moving to next step.")
-                    raise
+            
+            # Classify error
+            if "524" in error_str or "timeout" in error_str.lower():
+                error_type = "524_timeout"
+            elif "502" in error_str or "Bad Gateway" in error_str or "gateway" in error_str.lower():
+                error_type = "502_bad_gateway"
+            elif "Connection" in error_str or "connection" in error_str.lower():
+                error_type = "connection_error"
             else:
+                error_type = "other"
+            
+            # Check if retryable
+            is_retryable = error_type in ["524_timeout", "502_bad_gateway", "connection_error"]
+            
+            if is_retryable and attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # 1s, 2s, 4s, 8s, 16s
+                print(f"⚠️  {error_type} on attempt {attempt + 1}/{max_retries}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                # Final failure
+                training_stats["failed"] += 1
+                training_stats["failure_reasons"][error_type] = training_stats["failure_reasons"].get(error_type, 0) + 1
+                log_step_result(step_num, success=False, error=error_type)
+                print(f"❌ Step {step_num} failed after {attempt + 1} attempts: {error_type}")
                 raise
+
+
+def print_training_summary():
+    """Print cumulative training statistics"""
+    print(f"\n{'='*60}")
+    print(f"📊 TRAINING STATISTICS")
+    print(f"{'='*60}")
+    total = training_stats["attempted"]
+    successful = training_stats["successful"]
+    failed = training_stats["failed"]
+    
+    print(f"Total attempted: {total}")
+    print(f"Successful: {successful} ({successful/total*100:.1f}%)")
+    print(f"Failed: {failed} ({failed/total*100:.1f}%)")
+    print(f"\nFailure breakdown:")
+    for reason, count in sorted(training_stats["failure_reasons"].items(), key=lambda x: x[1], reverse=True):
+        print(f"  {reason}: {count} ({count/failed*100:.1f}% of failures)")
+    print(f"{'='*60}\n")
 
 
 async def run_evaluation(model_name: str, project: str, reward_fn: str, n_episodes: int = 20):
@@ -195,12 +278,16 @@ async def main():
         
         # Train with retry logic
         try:
-            await train_with_retry(backend, model, train_groups, config)
+            await train_with_retry(backend, model, train_groups, config, step_num=i+1)
             print(f"✅ Step {i + 1} complete!")
         except Exception as e:
             print(f"❌ Step {i + 1} failed after retries: {e}")
             print("Continuing to next step...")
             continue
+
+        # Print summary every 10 steps
+        if (i + 1) % 10 == 0:
+            print_training_summary()
         
         # Run evaluation every N steps
         if args.eval_every > 0 and (i + 1) % args.eval_every == 0:
@@ -215,9 +302,11 @@ async def main():
                 print(f"⚠️  Evaluation failed: {e}")
                 print("Continuing training...")
     
+    # Final summary
     print(f"\n{'='*60}")
     print(f"🎉 Training complete! Finished steps {start_step} to {end_step}")
     print(f"{'='*60}")
+    print_training_summary()
     
     # Final evaluation
     print("\n🏁 Running final evaluation...")
