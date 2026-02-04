@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import requests
 from openai import AsyncOpenAI
 import art
-import weave
+# import weave
 from rewards import compute_reward
 
 MAX_QUESTIONS = 15  # analogous to lowering WINNING_VALUE in 2048

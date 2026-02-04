@@ -5,7 +5,7 @@ import random
 from dotenv import load_dotenv
 
 import art
-import weave
+# import weave
 from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
