@@ -46,6 +46,14 @@ AGENT_005_CONFIG = {
     "learning_rate": 1e-5,
 }
 
+AGENT_005_V2_CONFIG = {
+    "name": "20q-agent-005-v2", # run after patching indistinguishable objects and verifying data integrity
+    "project": "20q",
+    "reward_fn": "v5",  # try v5 to prevent suicide guessing and use new narrowing bonus
+    "prompt_version": "v4", # Use v4 to help prevent attribute hallucination
+    "learning_rate": 1e-5,
+}
+
 def get_agent_config(version: str):
     # Load config based on agent
     if version == "001":
@@ -61,5 +69,5 @@ def get_agent_config(version: str):
     elif version == "005":
         config = AGENT_005_CONFIG
     else:
-        config = AGENT_005_CONFIG #default
+        config = AGENT_005_V2_CONFIG #default
     return config

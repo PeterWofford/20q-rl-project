@@ -55,5 +55,7 @@
   "has_tail",
   "has_fur",
   "has_handle",
-  "has_buttons"
+  "has_buttons",
+  "is_building",
+  "has_drawers"
 ]
