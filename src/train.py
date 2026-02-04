@@ -91,13 +91,15 @@ async def train_with_retry(backend, model, train_groups, config, step_num: int, 
                 error_type = "524_timeout"
             elif "502" in error_str or "Bad Gateway" in error_str or "gateway" in error_str.lower():
                 error_type = "502_bad_gateway"
+            elif "500" in error_str or "Internal server error" in error_str:
+                error_type = "500_internal_error"
             elif "Connection" in error_str or "connection" in error_str.lower():
                 error_type = "connection_error"
             else:
                 error_type = "other"
-            
+
             # Check if retryable
-            is_retryable = error_type in ["524_timeout", "502_bad_gateway", "connection_error"]
+            is_retryable = error_type in ["524_timeout", "502_bad_gateway", "500_internal_error", "connection_error"]
             
             if is_retryable and attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # 1s, 2s, 4s, 8s, 16s
