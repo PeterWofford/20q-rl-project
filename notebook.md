@@ -70,3 +70,48 @@ This is NOT a hyperparameter issue. It's a structural property of trajectory-lev
 **Next:**
 
 Run 2 — SFT warm-start + GRPO. The hypothesis: if SFT pre-trains the model to reliably ask questions and guess (making skill 2 "sticky"), GRPO's optimization landscape changes. The safe-haven loop becomes a local minimum the model must actively degrade toward, rather than a default it falls into. The SFT checkpoint starts at oracle-level play; GRPO's job is to maintain or refine, not discover. Target: 70-85% accuracy sustained through 50 steps without collapse.
+
+---
+
+## Run 2a (failed) — 2026-02-24
+
+**Hypothesis:** SFT on oracle trajectories teaches the model to play 20Q optimally (question-asking strategy + correct guessing). Post-SFT accuracy should be high before GRPO begins.
+
+**Setup:**
+- Model: `run2-sft` based on OpenPipe/Qwen3-14B-Instruct
+- SFT: 76 oracle trajectories × 3 epochs = 228 examples, batch_size 2, peak_lr 2e-4, cosine schedule
+- Training via `art.utils.sft.train_sft_from_file` (ART 0.5.11)
+
+**Results:**
+
+SFT training metrics looked healthy:
+- Loss: 0.45 → 0.03 (steady decline over 114 gradient steps)
+- grad_norm: nonzero throughout (0.1-0.6 range)
+- Model step advanced: 0 → 1
+- ~400-500 trainable tokens per batch (assistant tokens being trained on)
+
+Post-SFT eval (20 episodes):
+- Accuracy: **0% (0/20)**
+- Wrong guesses: 20/20, Timeouts: 0/20
+- Avg questions: 7.0 (oracle is 6.6 — nearly identical)
+- Avg candidates remaining: 1.1 (near-perfect narrowing)
+
+**Failure mode: Object ID hallucination.**
+
+The model learned the oracle's question-asking strategy almost perfectly — it asks ~7 information-theoretic questions and narrows to ~1 candidate. But when it calls `submit_guess`, it generates **fabricated object IDs** like `n1k3l`, `u8d0e`, `c4v6w` that don't exist in the dataset. Real IDs are arbitrary 5-character strings (e.g., `a1x9z` for Lion), so the model learned the format but not the mapping.
+
+**Root cause:** The oracle has direct access to `ep["candidates"]` and never needs to call `get_top_candidates` to see remaining IDs. The SFT data therefore contained no `get_top_candidates` calls before `submit_guess`. The model had no way to learn that it should look up the actual candidate IDs before guessing — it just hallucinated plausible-looking ones.
+
+**Fix:** Modified `generate_sft_data.py` to inject a `get_top_candidates(k=N)` call immediately before every `submit_guess`. This teaches the model the pattern: narrow down → look up remaining IDs → guess from the list.
+
+**Additional issue:** W&B logging went to project `20q` instead of `art-20q-runner-2026`. Fixed in `train_sft.py`.
+
+**Interpretation:**
+
+This is not an RL finding — it's a data engineering lesson about the oracle-to-LLM gap. The oracle operates with perfect state access; the LLM operates through tool outputs. SFT data must reflect the LLM's information constraints, not the oracle's. Any action the oracle takes using internal state that the LLM can only access via tools needs an explicit tool call injected into the training data.
+
+This is actually relevant to the broader thesis: even with SFT, the training data needs to account for the difference between "having knowledge" and "having access to knowledge through an interface." The oracle knows the answer; the LLM must look it up.
+
+**Cost:** ~$5 (SFT training only, GRPO not started)
+
+**Next:** Re-run SFT as `run2-sft-v2` with fixed oracle data that includes `get_top_candidates` before `submit_guess`.

@@ -17,13 +17,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv()
 
+import wandb
 import art
 from art.serverless.backend import ServerlessBackend
 from art.utils.sft import train_sft_from_file
 
 SFT_DATA_PATH = "data/sft_oracle_trajectories.jsonl"
-MODEL_NAME = "run2-sft"
+MODEL_NAME = "run2-sft-v2"
 PROJECT = "20q"
+WANDB_PROJECT = "art-20q-runner-2026"
 BASE_MODEL = "OpenPipe/Qwen3-14B-Instruct"
 
 
@@ -99,4 +101,14 @@ async def run_sft():
 
 if __name__ == "__main__":
     os.makedirs("trajectories/run2-sft", exist_ok=True)
+    os.environ["WANDB_RUN_ID"] = MODEL_NAME
+    os.environ["WANDB_RESUME"] = "allow"
+    wandb.init(project=WANDB_PROJECT, name=MODEL_NAME, config={
+        "phase": "sft",
+        "base_model": BASE_MODEL,
+        "sft_data": SFT_DATA_PATH,
+        "epochs": 3,
+        "batch_size": 2,
+        "peak_lr": 2e-4,
+    })
     asyncio.run(run_sft())
