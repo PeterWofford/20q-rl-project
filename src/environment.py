@@ -182,15 +182,17 @@ async def evaluate_question(object_id: str, object_name: str, attrs: dict[str, b
     )
 
     client = _get_judge_client()
-    async with _judge_semaphore:
-        response = await client.chat.completions.create(
-            model="gpt-5-nano",
-            max_completion_tokens=256,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-    answer = response.choices[0].message.content.strip().lower()
-    if answer not in ("yes", "no", "unknown"):
+    try:
+        async with _judge_semaphore:
+            response = await client.chat.completions.create(
+                model="gpt-5-nano",
+                max_completion_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        answer = response.choices[0].message.content.strip().lower()
+        if answer not in ("yes", "no", "unknown"):
+            answer = "unknown"
+    except Exception:
         answer = "unknown"
 
     _judge_cache[cache_key] = answer

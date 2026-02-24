@@ -35,17 +35,17 @@ async def test_judge():
         print(f"  (Dog/Car not found, using {dog['name']} and {car['name']})")
 
     test_cases = [
-        (dog["name"], dog["attrs"], "Is it an animal?", "yes"),
-        (car["name"], car["attrs"], "Is it an animal?", "no"),
-        (dog["name"], dog["attrs"], "Is it man-made?", "no"),
-        (car["name"], car["attrs"], "Is it man-made?", "yes"),
+        (dog["id"], dog["name"], dog["attrs"], "Is it an animal?", "yes"),
+        (car["id"], car["name"], car["attrs"], "Is it an animal?", "no"),
+        (dog["id"], dog["name"], dog["attrs"], "Is it man-made?", "no"),
+        (car["id"], car["name"], car["attrs"], "Is it man-made?", "yes"),
         # Edge case: vague question
-        (dog["name"], dog["attrs"], "Is it related to the concept of infinity?", "no"),
+        (dog["id"], dog["name"], dog["attrs"], "Is it related to the concept of infinity?", "no"),
     ]
 
     passed = 0
-    for obj_name, attrs, question, expected in test_cases:
-        answer = await evaluate_question(obj_name, attrs, question)
+    for obj_id, obj_name, attrs, question, expected in test_cases:
+        answer = await evaluate_question(obj_id, obj_name, attrs, question)
         status = "PASS" if answer == expected else "FAIL"
         if status == "PASS":
             passed += 1
