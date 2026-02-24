@@ -64,10 +64,19 @@ AGENT_006_CONFIG = {
 
 AGENT_RUN2_CONFIG = {
     "name": "run2-sft-v2",       # Same name as SFT model so GRPO continues from SFT checkpoint
-    "project": "20q",
+    "project": "art-20q-runner-2026",
     "reward_fn": "v5",
     "prompt_version": "v4",
     "learning_rate": 1e-5,
+}
+
+AGENT_RUN3_CONFIG = {
+    "name": "run3-freeform",
+    "project": "art-20q-runner-2026",
+    "reward_fn": "v5",
+    "prompt_version": "v6",
+    "learning_rate": 1e-5,
+    "question_mode": "freeform",
 }
 
 def get_agent_config(version: str):
@@ -88,6 +97,8 @@ def get_agent_config(version: str):
         config = AGENT_005_V2_CONFIG #default
     elif version == "run2":
         config = AGENT_RUN2_CONFIG
+    elif version == "run3":
+        config = AGENT_RUN3_CONFIG
     else:
         config = AGENT_006_CONFIG #oracle default
     return config

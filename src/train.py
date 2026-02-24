@@ -162,7 +162,7 @@ def extract_trajectory_log(trajectory, secret_id: str, step: int) -> dict:
 
 async def run_evaluation(model_name: str, project: str, reward_fn: str,
                          n_episodes: int = 20, save_trajectories: str = None,
-                         prompt_version: str = "v4"):
+                         prompt_version: str = "v4", question_mode: str = "predefined"):
     """Quick evaluation during training. Optionally saves full trajectories to JSONL."""
     print(f"\n{'='*60}")
     print(f"EVALUATION at current checkpoint")
@@ -198,7 +198,7 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str,
                 eval_model,
                 Scenario20Q(step=current_step, secret_id=secret_id,
                            reward_fn=reward_fn, prompt_version=prompt_version,
-                           use_oracle=False)
+                           use_oracle=False, question_mode=question_mode)
             )
 
             if trajectory.metrics.get("correct") == 1:
@@ -244,7 +244,7 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str,
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2"])
+    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2", "run3"])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
@@ -324,6 +324,7 @@ async def main():
             n_episodes=20,
             save_trajectories=f"{traj_dir}/eval",
             prompt_version=config["prompt_version"],
+            question_mode=config.get("question_mode", "predefined"),
         )
     except Exception as e:
         print(f"Baseline evaluation failed: {e}")
@@ -349,6 +350,7 @@ async def main():
                             reward_fn=config["reward_fn"],
                             prompt_version=config["prompt_version"],
                             use_oracle=False,
+                            question_mode=config.get("question_mode", "predefined"),
                         )
                     )
                     for _ in range(10)
@@ -384,6 +386,7 @@ async def main():
                     n_episodes=20,
                     save_trajectories=f"{traj_dir}/eval",
                     prompt_version=config["prompt_version"],
+                    question_mode=config.get("question_mode", "predefined"),
                 )
             except Exception as e:
                 print(f"Evaluation failed: {e}")
@@ -405,6 +408,7 @@ async def main():
             n_episodes=50,
             save_trajectories=f"{traj_dir}/final_eval",
             prompt_version=config["prompt_version"],
+            question_mode=config.get("question_mode", "predefined"),
         )
     except Exception as e:
         print(f"Final evaluation failed: {e}")

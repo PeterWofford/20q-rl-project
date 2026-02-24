@@ -2,11 +2,14 @@ import json
 import random
 import string
 import math
+import asyncio
+import os
 from typing import TypedDict, Optional, Literal, Any
 from pydantic import BaseModel
 import requests
 import openai
 from openai import AsyncOpenAI
+import anthropic
 import art
 from rewards import compute_reward
 from prompts import get_system_prompt
@@ -49,11 +52,12 @@ class TwentyQuestionsEpisode(TypedDict):
     qa_pairs: list[tuple[str, str]]
     prev_candidate_count: int
     attributes_listed: bool  # <--- NEW FLAG
+    question_mode: str  # "predefined" or "freeform"
 
 def _rand_id(k: int = 6) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=k))
 
-def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: str = 'v5', prompt_version: str = "v5-strict") -> TwentyQuestionsEpisode:
+def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: str = 'v5', prompt_version: str = "v5-strict", question_mode: str = "predefined") -> TwentyQuestionsEpisode:
     eid = _rand_id()
     if secret_id is None:
         secret_id = random.choice(objects)["id"]
@@ -72,6 +76,7 @@ def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Op
         "reward_fn": reward_fn,
         "prev_candidate_count": len(objects),
         "attributes_listed": False,
+        "question_mode": question_mode,
     }
 
 def render_state(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj]) -> str:
@@ -128,14 +133,113 @@ def submit_guess(ep: TwentyQuestionsEpisode, object_id: str) -> bool:
     ep["guessed_id"] = object_id
     return object_id == ep["secret_id"]
 
-def tool_schemas():
-    return [
-        {"type": "function", "function": {"name": "list_attributes", "description": "List attributes.", "parameters": {"type": "object", "properties": {}}}},
-        {"type": "function", "function": {"name": "ask_yesno", "description": "Ask attr.", "parameters": {"type": "object", "properties": {"attr_name": {"type": "string"}}, "required": ["attr_name"]}}},
+
+# --- FREEFORM QUESTION JUDGE ---
+
+_anthropic_client = None
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic()
+    return _anthropic_client
+
+
+JUDGE_PROMPT = """You are a yes/no question judge for a 20 Questions game.
+
+Given an object and its boolean attributes, answer the player's yes/no question.
+
+Object: {object_name}
+Attributes (true means the object has this property):
+{attrs_text}
+
+Player's question: "{question}"
+
+Based on the object's attributes and your general knowledge about "{object_name}", answer:
+- "yes" if the answer is clearly yes
+- "no" if the answer is clearly no
+- "unknown" if the question cannot be reliably answered
+
+Respond with ONLY one word: yes, no, or unknown"""
+
+
+async def evaluate_question(object_name: str, attrs: dict[str, bool], question: str) -> str:
+    """Call LLM judge to evaluate a freeform yes/no question against an object."""
+    attrs_text = "\n".join(f"  {k}: {v}" for k, v in sorted(attrs.items()))
+    prompt = JUDGE_PROMPT.format(
+        object_name=object_name,
+        attrs_text=attrs_text,
+        question=question,
+    )
+
+    client = _get_anthropic_client()
+    response = await client.messages.create(
+        model="claude-sonnet-4-6-20250514",
+        max_tokens=5,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    answer = response.content[0].text.strip().lower()
+    if answer in ("yes", "no", "unknown"):
+        return answer
+    # Default to unknown if judge gives unexpected output
+    return "unknown"
+
+
+async def ask_freeform(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, 'Obj'], question: str) -> str:
+    """Process a freeform natural language question using the LLM judge."""
+    ep["questions_asked"] += 1
+    ep["last_question"] = f"freeform:{question}"
+    ep["prev_candidate_count"] = len(ep["candidates"])
+
+    # Evaluate against the secret object
+    secret = objects_by_id[ep["secret_id"]]
+    secret_answer = await evaluate_question(secret["name"], secret["attrs"], question)
+
+    if secret_answer == "unknown":
+        ep["invalid_questions"] += 1
+        ep["last_answer"] = "unknown"
+        ep["qa_pairs"].append((question, "unknown"))
+        return "unknown"
+
+    # Evaluate against all remaining candidates in parallel
+    async def eval_candidate(oid: str) -> tuple[str, str]:
+        obj = objects_by_id[oid]
+        answer = await evaluate_question(obj["name"], obj["attrs"], question)
+        return oid, answer
+
+    results = await asyncio.gather(
+        *(eval_candidate(oid) for oid in ep["candidates"])
+    )
+
+    # Keep candidates whose answer matches the secret's answer
+    ep["candidates"] = [oid for oid, answer in results if answer == secret_answer]
+
+    # Safety: ensure the secret is always in candidates (judge consistency)
+    if ep["secret_id"] not in ep["candidates"]:
+        ep["candidates"].append(ep["secret_id"])
+
+    ep["last_answer"] = secret_answer
+    ep["qa_pairs"].append((question, secret_answer))
+    return secret_answer
+
+
+def tool_schemas(question_mode: str = "predefined"):
+    common = [
         {"type": "function", "function": {"name": "get_candidate_count", "description": "Count remaining.", "parameters": {"type": "object", "properties": {}}}},
         {"type": "function", "function": {"name": "get_top_candidates", "description": "Get candidates.", "parameters": {"type": "object", "properties": {"k": {"type": "integer"}}, "required": ["k"]}}},
         {"type": "function", "function": {"name": "submit_guess", "description": "Guess object.", "parameters": {"type": "object", "properties": {"object_id": {"type": "string"}}, "required": ["object_id"]}}},
     ]
+
+    if question_mode == "freeform":
+        return [
+            {"type": "function", "function": {"name": "ask_question", "description": "Ask a yes/no question about the secret object.", "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "A yes/no question to ask about the secret object"}}, "required": ["question"]}}},
+        ] + common
+    else:
+        return [
+            {"type": "function", "function": {"name": "list_attributes", "description": "List attributes.", "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {"name": "ask_yesno", "description": "Ask attr.", "parameters": {"type": "object", "properties": {"attr_name": {"type": "string"}}, "required": ["attr_name"]}}},
+        ] + common
 
 # --- HEURISTIC TEACHER LOGIC ---
 def get_optimal_action(ep: TwentyQuestionsEpisode, available_attributes: list[str]) -> tuple[str, dict]:
@@ -180,19 +284,29 @@ class Scenario20Q(BaseModel):
     secret_id: str
     reward_fn: str = "v5"
     prompt_version: str = "v4"
-    use_oracle: bool = True 
+    use_oracle: bool = True
+    question_mode: str = "predefined"
 
 @art.retry(exceptions=(requests.ReadTimeout, openai.InternalServerError, openai.APIError, openai.APIConnectionError))
 async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     client = AsyncOpenAI(base_url=model.inference_base_url, api_key=model.inference_api_key)
 
-    ep = generate_episode(objects, attributes, secret_id=scenario.secret_id, reward_fn=scenario.reward_fn, prompt_version=scenario.prompt_version)
+    ep = generate_episode(objects, attributes, secret_id=scenario.secret_id, reward_fn=scenario.reward_fn, prompt_version=scenario.prompt_version, question_mode=scenario.question_mode)
+
+    # Force oracle off for freeform mode
+    use_oracle = scenario.use_oracle and scenario.question_mode != "freeform"
 
     system_prompt = get_system_prompt(scenario.prompt_version)
+
+    if scenario.question_mode == "freeform":
+        initial_msg = "Find the secret object. Ask yes/no questions to narrow down the candidates."
+    else:
+        initial_msg = "Find the secret object. Start by calling list_attributes()."
+
     trajectory = art.Trajectory(
         messages_and_choices=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "Find the secret object. Start by calling list_attributes()."},
+            {"role": "user", "content": initial_msg},
         ],
         metadata={"episode_id": ep["id"], "secret_id": scenario.secret_id, "step": scenario.step},
         reward=0,
@@ -203,10 +317,10 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     for _ in range(max_steps):
         trajectory.messages_and_choices.append({"role": "user", "content": render_state(ep, objects_by_id)})
 
-        if scenario.use_oracle:
+        if use_oracle:
             # TEACHER MODE
             tool_name, tool_args = get_optimal_action(ep, attributes)
-            
+
             # Create REAL OpenAI Objects
             function_obj = Function(name=tool_name, arguments=json.dumps(tool_args))
             tool_call = ChatCompletionMessageToolCall(id="call_" + _rand_id(), function=function_obj, type="function")
@@ -217,7 +331,7 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
             chat = await client.chat.completions.create(
                 model=model.get_inference_name(),
                 messages=trajectory.messages(),
-                tools=tool_schemas(),
+                tools=tool_schemas(question_mode=scenario.question_mode),
                 tool_choice="auto",
                 max_completion_tokens=256,
             )
@@ -240,6 +354,10 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
             elif tool_name == "ask_yesno":
                 ans = ask_yesno(ep, objects_by_id, attributes, args["attr_name"])
                 result = {"answer": ans, "candidate_count": len(ep["candidates"])}
+            elif tool_name == "ask_question":
+                question_text = args.get("question", "")
+                ans = await ask_freeform(ep, objects_by_id, question_text)
+                result = {"answer": ans, "candidate_count": len(ep["candidates"])}
             elif tool_name == "get_candidate_count":
                 result = {"count": len(ep["candidates"])}
             elif tool_name == "get_top_candidates":
@@ -255,8 +373,8 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
             trajectory.messages_and_choices.append({
                 "role": "tool", "tool_call_id": tc.id, "name": tool_name, "content": json.dumps(result),
             })
-            
-            if tool_name in ("ask_yesno", "submit_guess"): break
+
+            if tool_name in ("ask_yesno", "ask_question", "submit_guess"): break
 
         if check_episode_finished(ep): break
 
