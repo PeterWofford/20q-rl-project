@@ -166,9 +166,7 @@ This is a landmark result for the thesis. 76 SFT trajectories on a 14B model ach
 
 ---
 
-## Run 3 — Free-Form Questions (GRPO from base) — 2026-02-24
-
-**Hypothesis:** GRPO from the base Qwen-14B model cannot learn to generate discriminating natural language yes/no questions from reward signal alone. Without the predefined attribute menu, the agent must compose its own questions — a creative generation task that requires both world knowledge and information-theoretic reasoning. We expect accuracy well below the predefined-mode baseline (Run 1 step-0: 30%), with the agent producing vague or repetitive questions that fail to narrow candidates efficiently.
+## Run 3 — Free-Form Questions — 2026-02-24
 
 **Why pivot to Run 3 now (before Run 2c GRPO)?**
 
@@ -183,23 +181,71 @@ This transforms 20Q from an algorithm problem into an agent problem:
 
 The thesis question becomes sharper: **Can GRPO teach an agent to ask good questions, or only to follow a script?**
 
+---
+
+### Run 3a (failed — infrastructure) — 2026-02-24
+
+**Hypothesis:** Same as Run 3 overall — GRPO from base Qwen-14B cannot learn discriminating freeform questions from reward signal alone.
+
 **Setup:**
 - Model: OpenPipe/Qwen3-14B-Instruct (base, no SFT)
 - RL: GRPO via ART ServerlessBackend
 - Reward: v5 (same as Run 1 — narrowing bonus, suicide-guess penalty)
 - Prompt: v6 (freeform — no attribute list, no `list_attributes()`)
 - Tools: `ask_question(question)`, `get_candidate_count()`, `get_top_candidates(k)`, `submit_guess(object_id)`
-- LLM judge: Claude Sonnet 4.6 evaluates each question against each candidate object
+- LLM judge: gpt-5-nano evaluates each question against each candidate object
+- Concurrency: `asyncio.Semaphore(20)` — max 20 concurrent judge calls
 - Batch size: 6 secrets × 10 rollouts/secret = 60 trajectories/step
 - Learning rate: 1e-5
-- Steps: 50, seed 1
-- Eval: 20 episodes at steps 0, 10, 20, 30, 40, 50
+- Steps: 5 (smoke test), seed 1
+- W&B run: `run3-smoke-seed1`
 
-**Key design decisions:**
+**Results:** Killed before step 1 completed. A single GRPO step could not finish in reasonable time.
+
+**Failure mode: Infrastructure bottleneck, not RL failure.**
+
+Each freeform question requires 77 LLM judge calls (1 for the secret + 76 for all candidates), versus zero external calls in predefined mode. With batch size 6, 10 rollouts per secret, and ~8 questions per episode, a single GRPO step requires ~37,000 judge calls. At semaphore 20, this meant ~4 serial batches per question, making each step take prohibitively long.
+
+This is a new class of failure mode not seen in Runs 1-2: the environment itself becomes the bottleneck. In predefined mode, candidate filtering is a fast in-memory operation (loop over 76 objects, check a boolean). In freeform mode, it's 76 API calls per question. The 20Q environment went from O(1) per question to O(N × API_latency) per question.
+
+**Cost:** Minimal (killed early, some gpt-5-nano calls wasted).
+
+**Interpretation:** Not an RL finding — purely an infrastructure lesson. Freeform environments with LLM judges have fundamentally different cost and latency profiles from structured environments. Any freeform agent task that requires per-candidate evaluation will hit this wall. The fix is caching + higher concurrency, not changes to the RL algorithm.
+
+**Next:** Fix infrastructure: add judge result cache, bump concurrency, retry smoke test.
+
+---
+
+### Run 3b (post-cache fix) — 2026-02-24
+
+**Hypothesis:** GRPO from the base Qwen-14B model cannot learn to generate discriminating natural language yes/no questions from reward signal alone. Without the predefined attribute menu, the agent must compose its own questions — a creative generation task that requires both world knowledge and information-theoretic reasoning. We expect accuracy well below the predefined-mode baseline (Run 1 step-0: 30%), with the agent producing vague or repetitive questions that fail to narrow candidates efficiently.
+
+**Setup:**
+- Model: OpenPipe/Qwen3-14B-Instruct (base, no SFT)
+- RL: GRPO via ART ServerlessBackend
+- Reward: v5 (same as Run 1 — narrowing bonus, suicide-guess penalty)
+- Prompt: v6 (freeform — no attribute list, no `list_attributes()`)
+- Tools: `ask_question(question)`, `get_candidate_count()`, `get_top_candidates(k)`, `submit_guess(object_id)`
+- LLM judge: gpt-5-nano evaluates each question against each candidate object
+- Concurrency: `asyncio.Semaphore(50)` — bumped from 20
+- Judge cache: in-memory `_judge_cache` keyed by `(object_id, normalized_question)` — eliminates redundant calls across GRPO rollouts
+- Batch size: 6 secrets × 10 rollouts/secret = 60 trajectories/step
+- Learning rate: 1e-5
+- Steps: 5 (smoke test), seed 1
+
+**Changes from Run 3a:**
+1. **Concurrency semaphore: 20 → 50.** Reduces serial batches per question from ~4 to ~2.
+2. **Judge result cache.** `_judge_cache` keyed by `(object_id, question.strip().lower())`. GRPO generates 10 rollouts per secret — similar questions across rollouts (e.g., "Is it alive?") now hit cache. This is the biggest efficiency win since many rollouts converge on the same popular questions.
+3. **`evaluate_question` signature change.** Added `object_id` parameter to support cache keying. `ask_freeform` updated to pass object IDs through.
+4. **Safety net for judge inconsistency.** If the judge gives different answers for the same question on the secret vs. during candidate filtering, the secret is force-added back to the candidate list. Prevents the agent from being punished for judge noise.
+
+**Key design decisions (unchanged from 3a):**
 1. LLM judge sees the object's name + all 59 boolean attributes + the question → returns yes/no/unknown. This allows questions that span multiple attributes ("Is it something you'd find in a kitchen?").
 2. Candidate filtering: judge evaluates every remaining candidate per question, keeps those matching the secret's answer. Parallel via `asyncio.gather()`.
 3. "unknown" answers penalized at 0.5 (same as invalid attributes in v5), incentivizing the agent to ask clear, answerable questions.
 4. No SFT warm-start. Starting from base to isolate what GRPO alone can learn in freeform mode.
+
+**Cost note:** Freeform mode has a fundamentally different cost profile from predefined mode. Each GRPO step costs gpt-5-nano judge calls proportional to `batch_size × rollouts × questions_per_episode × num_objects`. At ~37K calls/step (pre-cache) and 50 steps, budget monitoring is critical. The judge cache should reduce actual API calls significantly for repeated questions.
 
 **Expected results:**
 - Step 0 (base model): ~10-20% accuracy. The base model can ask questions but won't have a strategic narrowing approach.
@@ -211,6 +257,6 @@ The thesis question becomes sharper: **Can GRPO teach an agent to ask good quest
 - If GRPO fails (collapse or no improvement) → strong evidence that open-ended action spaces require SFT demonstration, supporting the thesis that "RL refines execution, it doesn't teach reasoning."
 - If base model is already decent at step 0 → pretraining knowledge matters more than RL, same as Run 1's step-0 showing.
 
-**Results:** *pending*
+**Results:** *pending — smoke test in progress*
 
-**Next:** If GRPO fails in freeform mode, Run 3b adds SFT warm-start on hand-crafted freeform trajectories. If it succeeds, explore curriculum (fewer objects first) or model size ablations.
+**Next:** If smoke test completes in reasonable time, launch full 50-step run. If GRPO fails in freeform mode, Run 3c adds SFT warm-start on hand-crafted freeform trajectories. If it succeeds, explore curriculum (fewer objects first) or model size ablations.
