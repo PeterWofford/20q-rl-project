@@ -162,7 +162,8 @@ def extract_trajectory_log(trajectory, secret_id: str, step: int) -> dict:
 
 async def run_evaluation(model_name: str, project: str, reward_fn: str,
                          n_episodes: int = 20, save_trajectories: str = None,
-                         prompt_version: str = "v4", question_mode: str = "predefined"):
+                         prompt_version: str = "v4", question_mode: str = "predefined",
+                         perturbation_type: str = "none", perturbation_rate: float = 0.0):
     """Quick evaluation during training. Optionally saves full trajectories to JSONL."""
     print(f"\n{'='*60}")
     print(f"EVALUATION at current checkpoint")
@@ -198,7 +199,9 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str,
                 eval_model,
                 Scenario20Q(step=current_step, secret_id=secret_id,
                            reward_fn=reward_fn, prompt_version=prompt_version,
-                           use_oracle=False, question_mode=question_mode)
+                           use_oracle=False, question_mode=question_mode,
+                           perturbation_type=perturbation_type,
+                           perturbation_rate=perturbation_rate)
             )
 
             if trajectory.metrics.get("correct") == 1:
@@ -244,13 +247,15 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str,
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2", "run3"])
+    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2", "run3", "run4a", "run4b", "run4c"])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--run-label", type=str, default=None, help="Label for grouping runs (e.g. 'run1')")
     parser.add_argument("--num-objects", type=int, default=None, help="Subset to N objects (default: all 76). Use fewer for faster smoke tests in freeform mode.")
+    parser.add_argument("--perturbation-type", type=str, default=None, choices=["none", "answer_corruption", "forced_bad_start", "attribute_removal"], help="Override perturbation type from config")
+    parser.add_argument("--perturbation-rate", type=float, default=None, help="Override perturbation rate from config")
     args = parser.parse_args()
 
     # Set seed early
@@ -272,6 +277,10 @@ async def main():
 
     config = get_agent_config(args.agent)
 
+    # Resolve perturbation settings: CLI overrides config
+    perturbation_type = args.perturbation_type or config.get("perturbation_type", "none")
+    perturbation_rate = args.perturbation_rate if args.perturbation_rate is not None else config.get("perturbation_rate", 0.0)
+
     # Build run name with seed suffix
     run_name = config["name"]
     if args.run_label:
@@ -292,6 +301,8 @@ async def main():
         "reward_fn": config["reward_fn"],
         "prompt_version": config["prompt_version"],
         "num_objects": len(objects),
+        "perturbation_type": perturbation_type,
+        "perturbation_rate": perturbation_rate,
     })
 
     # Initialize Weave (DISABLED to save costs)
@@ -307,6 +318,8 @@ async def main():
 
     print(f"Run: {run_name} | Seed: {args.seed} | Agent: {args.agent}")
     print(f"Reward: {config['reward_fn']} | Prompt: {config['prompt_version']}")
+    if perturbation_type != "none":
+        print(f"Perturbation: {perturbation_type} (rate={perturbation_rate})")
     print(f"Trajectories saved to: {traj_dir}/")
 
     # Create model — use run_name so each seed gets a fresh checkpoint
@@ -347,6 +360,8 @@ async def main():
             save_trajectories=f"{traj_dir}/eval",
             prompt_version=config["prompt_version"],
             question_mode=config.get("question_mode", "predefined"),
+            perturbation_type=perturbation_type,
+            perturbation_rate=perturbation_rate,
         )
     except Exception as e:
         print(f"Baseline evaluation failed: {e}")
@@ -373,6 +388,8 @@ async def main():
                             prompt_version=config["prompt_version"],
                             use_oracle=False,
                             question_mode=config.get("question_mode", "predefined"),
+                            perturbation_type=perturbation_type,
+                            perturbation_rate=perturbation_rate,
                         )
                     )
                     for _ in range(10)
@@ -409,6 +426,8 @@ async def main():
                     save_trajectories=f"{traj_dir}/eval",
                     prompt_version=config["prompt_version"],
                     question_mode=config.get("question_mode", "predefined"),
+                    perturbation_type=perturbation_type,
+                    perturbation_rate=perturbation_rate,
                 )
             except Exception as e:
                 print(f"Evaluation failed: {e}")
@@ -431,6 +450,8 @@ async def main():
             save_trajectories=f"{traj_dir}/final_eval",
             prompt_version=config["prompt_version"],
             question_mode=config.get("question_mode", "predefined"),
+            perturbation_type=perturbation_type,
+            perturbation_rate=perturbation_rate,
         )
     except Exception as e:
         print(f"Final evaluation failed: {e}")

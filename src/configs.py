@@ -79,6 +79,36 @@ AGENT_RUN3_CONFIG = {
     "question_mode": "freeform",
 }
 
+AGENT_RUN4A_CONFIG = {
+    "name": "run2-sft-v2",
+    "project": "art-20q-runner-2026",
+    "reward_fn": "v5",
+    "prompt_version": "v4",
+    "learning_rate": 1e-5,
+    "perturbation_type": "answer_corruption",
+    "perturbation_rate": 0.15,
+}
+
+AGENT_RUN4B_CONFIG = {
+    "name": "run2-sft-v2",
+    "project": "art-20q-runner-2026",
+    "reward_fn": "v5",
+    "prompt_version": "v4",
+    "learning_rate": 1e-5,
+    "perturbation_type": "forced_bad_start",
+    "perturbation_rate": 0.0,  # not rate-based; always 2-3 forced questions
+}
+
+AGENT_RUN4C_CONFIG = {
+    "name": "run2-sft-v2",
+    "project": "art-20q-runner-2026",
+    "reward_fn": "v5",
+    "prompt_version": "v4",
+    "learning_rate": 1e-5,
+    "perturbation_type": "attribute_removal",
+    "perturbation_rate": 0.15,
+}
+
 def get_agent_config(version: str):
     # Load config based on agent
     if version == "001":
@@ -99,6 +129,12 @@ def get_agent_config(version: str):
         config = AGENT_RUN2_CONFIG
     elif version == "run3":
         config = AGENT_RUN3_CONFIG
+    elif version == "run4a":
+        config = AGENT_RUN4A_CONFIG
+    elif version == "run4b":
+        config = AGENT_RUN4B_CONFIG
+    elif version == "run4c":
+        config = AGENT_RUN4C_CONFIG
     else:
         config = AGENT_006_CONFIG #oracle default
     return config

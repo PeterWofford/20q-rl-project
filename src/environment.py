@@ -52,14 +52,43 @@ class TwentyQuestionsEpisode(TypedDict):
     prev_candidate_count: int
     attributes_listed: bool  # <--- NEW FLAG
     question_mode: str  # "predefined" or "freeform"
+    # Perturbation fields (Run 4)
+    perturbation_type: str          # "none" | "answer_corruption" | "forced_bad_start" | "attribute_removal"
+    perturbation_rate: float        # probability parameter (0.0-1.0)
+    corrupted_questions: int        # count of flipped answers (4a tracking)
+    disabled_attributes: list[str]  # per-episode disabled attrs (4c)
+    forced_questions: int           # number of pre-asked questions (4b tracking)
 
 def _rand_id(k: int = 6) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=k))
 
-def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: str = 'v5', prompt_version: str = "v5-strict", question_mode: str = "predefined") -> TwentyQuestionsEpisode:
+def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Optional[str] = None, reward_fn: str = 'v5', prompt_version: str = "v5-strict", question_mode: str = "predefined", perturbation_type: str = "none", perturbation_rate: float = 0.0) -> TwentyQuestionsEpisode:
     eid = _rand_id()
     if secret_id is None:
         secret_id = random.choice(objects)["id"]
+
+    # For attribute removal: randomly disable a fraction of attributes
+    disabled_attributes: list[str] = []
+    if perturbation_type == "attribute_removal" and perturbation_rate > 0:
+        n_disable = int(perturbation_rate * len(attributes))
+        if n_disable > 0:
+            # Get attributes that are true for the secret object
+            secret_obj = objects_by_id[secret_id]
+            secret_true_attrs = {a for a in attributes if secret_obj["attrs"].get(a, False)}
+            # Pick candidates to disable, but ensure not ALL secret-true attrs are disabled
+            candidates_to_disable = list(attributes)
+            random.shuffle(candidates_to_disable)
+            disabled = []
+            remaining_secret_attrs = set(secret_true_attrs)
+            for attr in candidates_to_disable:
+                if len(disabled) >= n_disable:
+                    break
+                # Don't disable if it would remove all secret-true attributes
+                if attr in remaining_secret_attrs and len(remaining_secret_attrs) <= 1:
+                    continue
+                disabled.append(attr)
+                remaining_secret_attrs.discard(attr)
+            disabled_attributes = disabled
 
     return {
         "id": eid,
@@ -76,6 +105,11 @@ def generate_episode(objects: list[Obj], attributes: list[str], *, secret_id: Op
         "prev_candidate_count": len(objects),
         "attributes_listed": False,
         "question_mode": question_mode,
+        "perturbation_type": perturbation_type,
+        "perturbation_rate": perturbation_rate,
+        "corrupted_questions": 0,
+        "disabled_attributes": disabled_attributes,
+        "forced_questions": 0,
     }
 
 def render_state(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj]) -> str:
@@ -106,6 +140,12 @@ def ask_yesno(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj], attribu
     ep["questions_asked"] += 1
     ep["last_question"] = f"attr:{attr_name}"
 
+    # Attribute removal (4c): disabled attributes return "unknown"
+    if attr_name in ep.get("disabled_attributes", []):
+        ep["invalid_questions"] += 1
+        ep["last_answer"] = "unknown"
+        return "unknown"
+
     if attr_name not in attributes:
         ep["invalid_questions"] += 1
         ep["last_answer"] = "unknown"
@@ -117,9 +157,16 @@ def ask_yesno(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj], attribu
     secret_has = bool(secret["attrs"].get(attr_name, False))
     answer: Literal["yes", "no"] = "yes" if secret_has else "no"
 
+    # Answer corruption (4a): flip the answer with probability perturbation_rate
+    if ep.get("perturbation_type") == "answer_corruption" and ep.get("perturbation_rate", 0) > 0:
+        if random.random() < ep["perturbation_rate"]:
+            answer = "no" if answer == "yes" else "yes"
+            ep["corrupted_questions"] = ep.get("corrupted_questions", 0) + 1
+
     ep["qa_pairs"].append((attr_name, answer))
 
-    if secret_has:
+    # Filter candidates based on the (potentially corrupted) answer
+    if answer == "yes":
         ep["candidates"] = [oid for oid in ep["candidates"] if objects_by_id[oid]["attrs"].get(attr_name, False)]
     else:
         ep["candidates"] = [oid for oid in ep["candidates"] if not objects_by_id[oid]["attrs"].get(attr_name, False)]
@@ -333,6 +380,48 @@ def get_optimal_action(ep: TwentyQuestionsEpisode, available_attributes: list[st
     return "submit_guess", {"object_id": candidates[0]}
 
 
+def apply_forced_bad_start(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj], attributes: list[str]) -> list[dict]:
+    """Pre-ask 2-3 random non-optimal questions. Returns message dicts to prepend to trajectory."""
+    n = random.randint(2, 3)
+
+    # Pick random attributes, avoiding the oracle-optimal first choice
+    optimal_tool, _ = get_optimal_action(ep, attributes)
+    asked_attrs = {qa[0] for qa in ep["qa_pairs"]}
+    available = [a for a in attributes if a not in asked_attrs]
+    random.shuffle(available)
+    chosen = available[:n]
+
+    forced_messages: list[dict] = []
+    for attr in chosen:
+        # Build assistant tool-call message
+        tool_call_id = "call_" + _rand_id()
+        assistant_msg = {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": "ask_yesno",
+                    "arguments": json.dumps({"attr_name": attr}),
+                },
+            }],
+        }
+        forced_messages.append(assistant_msg)
+
+        # Execute the question
+        ans = ask_yesno(ep, objects_by_id, attributes, attr)
+        result = {"answer": ans, "candidate_count": len(ep["candidates"])}
+        forced_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": "ask_yesno",
+            "content": json.dumps(result),
+        })
+
+    ep["forced_questions"] = n
+    return forced_messages
+
+
 class Scenario20Q(BaseModel):
     step: int
     secret_id: str
@@ -340,12 +429,14 @@ class Scenario20Q(BaseModel):
     prompt_version: str = "v4"
     use_oracle: bool = True
     question_mode: str = "predefined"
+    perturbation_type: str = "none"
+    perturbation_rate: float = 0.0
 
 @art.retry(exceptions=(requests.ReadTimeout, openai.InternalServerError, openai.APIError, openai.APIConnectionError))
 async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     client = AsyncOpenAI(base_url=model.inference_base_url, api_key=model.inference_api_key)
 
-    ep = generate_episode(objects, attributes, secret_id=scenario.secret_id, reward_fn=scenario.reward_fn, prompt_version=scenario.prompt_version, question_mode=scenario.question_mode)
+    ep = generate_episode(objects, attributes, secret_id=scenario.secret_id, reward_fn=scenario.reward_fn, prompt_version=scenario.prompt_version, question_mode=scenario.question_mode, perturbation_type=scenario.perturbation_type, perturbation_rate=scenario.perturbation_rate)
 
     # Force oracle off for freeform mode
     use_oracle = scenario.use_oracle and scenario.question_mode != "freeform"
@@ -365,6 +456,24 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
         metadata={"episode_id": ep["id"], "secret_id": scenario.secret_id, "step": scenario.step},
         reward=0,
     )
+
+    # Apply forced bad start (4b): pre-ask random questions before agent takes over
+    if scenario.perturbation_type == "forced_bad_start":
+        forced_msgs = apply_forced_bad_start(ep, objects_by_id, attributes)
+        # Prepend list_attributes so agent sees the attribute list
+        ep["attributes_listed"] = True
+        la_tool_id = "call_" + _rand_id()
+        trajectory.messages_and_choices.append({
+            "role": "assistant",
+            "tool_calls": [{"id": la_tool_id, "type": "function", "function": {"name": "list_attributes", "arguments": "{}"}}],
+        })
+        trajectory.messages_and_choices.append({
+            "role": "tool", "tool_call_id": la_tool_id, "name": "list_attributes",
+            "content": json.dumps({"attributes": attributes}),
+        })
+        # Add forced Q&A messages
+        for msg in forced_msgs:
+            trajectory.messages_and_choices.append(msg)
 
     max_steps = 25
 
@@ -440,5 +549,9 @@ async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:
     trajectory.metrics["guessed"] = int(ep["guessed_id"] is not None)
     trajectory.metrics["correct"] = int(ep["guessed_id"] == ep["secret_id"]) if ep["guessed_id"] else 0
     trajectory.metrics["candidate_reduction"] = int(len(objects) - len(ep["candidates"]))
+    # Perturbation metrics (Run 4)
+    trajectory.metrics["corrupted_questions"] = int(ep.get("corrupted_questions", 0))
+    trajectory.metrics["forced_questions"] = int(ep.get("forced_questions", 0))
+    trajectory.metrics["disabled_attributes"] = int(len(ep.get("disabled_attributes", [])))
 
     return trajectory
