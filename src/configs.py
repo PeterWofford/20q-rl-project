@@ -55,9 +55,17 @@ AGENT_005_V2_CONFIG = {
 }
 
 AGENT_006_CONFIG = {
-    "name": "20q-agent-007-oracle", 
+    "name": "20q-agent-007-oracle",
     "project": "20q",
     "reward_fn": "v5",           # High stakes reward (doesn't matter much since Oracle is perfect)
+    "prompt_version": "v4",
+    "learning_rate": 1e-5,
+}
+
+AGENT_RUN2_CONFIG = {
+    "name": "run2-sft",          # Same name as SFT model so GRPO continues from SFT checkpoint
+    "project": "20q",
+    "reward_fn": "v5",
     "prompt_version": "v4",
     "learning_rate": 1e-5,
 }
@@ -78,6 +86,8 @@ def get_agent_config(version: str):
         config = AGENT_005_CONFIG
     elif version == "005-v2":
         config = AGENT_005_V2_CONFIG #default
+    elif version == "run2":
+        config = AGENT_RUN2_CONFIG
     else:
         config = AGENT_006_CONFIG #oracle default
     return config
