@@ -9,7 +9,7 @@ import art
 from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
-from environment import rollout, Scenario20Q, objects, objects_by_id
+from environment import rollout, Scenario20Q, objects, objects_by_id, prewarm_judge_cache
 from configs import get_agent_config
 
 import warnings
@@ -329,6 +329,12 @@ async def main():
     start_step = await model.get_step()
     end_step = start_step + args.steps
     print(f"Starting training from step {start_step} to {end_step}")
+
+    # Pre-warm judge cache for freeform mode
+    if config.get("question_mode") == "freeform":
+        print("\nPre-warming judge cache (20 common questions × 76 objects)...")
+        n_cached = await prewarm_judge_cache(objects)
+        print(f"  Cached {n_cached} judge responses")
 
     # --- Step-0 baseline eval (before any GRPO training) ---
     print("\n--- BASELINE EVAL (step 0, pre-training) ---")
