@@ -9,7 +9,6 @@ from pydantic import BaseModel
 import requests
 import openai
 from openai import AsyncOpenAI
-import anthropic
 import art
 from rewards import compute_reward
 from prompts import get_system_prompt
@@ -136,13 +135,14 @@ def submit_guess(ep: TwentyQuestionsEpisode, object_id: str) -> bool:
 
 # --- FREEFORM QUESTION JUDGE ---
 
-_anthropic_client = None
+_judge_client = None
+_judge_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent judge calls
 
-def _get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = anthropic.AsyncAnthropic()
-    return _anthropic_client
+def _get_judge_client():
+    global _judge_client
+    if _judge_client is None:
+        _judge_client = AsyncOpenAI()
+    return _judge_client
 
 
 JUDGE_PROMPT = """You are a yes/no question judge for a 20 Questions game.
@@ -172,14 +172,15 @@ async def evaluate_question(object_name: str, attrs: dict[str, bool], question: 
         question=question,
     )
 
-    client = _get_anthropic_client()
-    response = await client.messages.create(
-        model="claude-sonnet-4-6-20250514",
-        max_tokens=5,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    client = _get_judge_client()
+    async with _judge_semaphore:
+        response = await client.chat.completions.create(
+            model="gpt-5-nano",
+            max_completion_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    answer = response.content[0].text.strip().lower()
+    answer = response.choices[0].message.content.strip().lower()
     if answer in ("yes", "no", "unknown"):
         return answer
     # Default to unknown if judge gives unexpected output
