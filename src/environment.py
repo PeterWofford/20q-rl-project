@@ -136,7 +136,8 @@ def submit_guess(ep: TwentyQuestionsEpisode, object_id: str) -> bool:
 # --- FREEFORM QUESTION JUDGE ---
 
 _judge_client = None
-_judge_semaphore = asyncio.Semaphore(20)  # Max 20 concurrent judge calls
+_judge_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent judge calls
+_judge_cache: dict[tuple[str, str], str] = {}  # (object_id, question) -> answer
 
 def _get_judge_client():
     global _judge_client
@@ -163,8 +164,16 @@ Based on the object's attributes and your general knowledge about "{object_name}
 Respond with ONLY one word: yes, no, or unknown"""
 
 
-async def evaluate_question(object_name: str, attrs: dict[str, bool], question: str) -> str:
-    """Call LLM judge to evaluate a freeform yes/no question against an object."""
+async def evaluate_question(object_id: str, object_name: str, attrs: dict[str, bool], question: str) -> str:
+    """Call LLM judge to evaluate a freeform yes/no question against an object.
+
+    Results are cached by (object_id, question) so repeated questions across
+    GRPO rollouts don't require additional judge calls.
+    """
+    cache_key = (object_id, question.strip().lower())
+    if cache_key in _judge_cache:
+        return _judge_cache[cache_key]
+
     attrs_text = "\n".join(f"  {k}: {v}" for k, v in sorted(attrs.items()))
     prompt = JUDGE_PROMPT.format(
         object_name=object_name,
@@ -181,10 +190,11 @@ async def evaluate_question(object_name: str, attrs: dict[str, bool], question: 
         )
 
     answer = response.choices[0].message.content.strip().lower()
-    if answer in ("yes", "no", "unknown"):
-        return answer
-    # Default to unknown if judge gives unexpected output
-    return "unknown"
+    if answer not in ("yes", "no", "unknown"):
+        answer = "unknown"
+
+    _judge_cache[cache_key] = answer
+    return answer
 
 
 async def ask_freeform(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, 'Obj'], question: str) -> str:
@@ -195,7 +205,7 @@ async def ask_freeform(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, 'Obj
 
     # Evaluate against the secret object
     secret = objects_by_id[ep["secret_id"]]
-    secret_answer = await evaluate_question(secret["name"], secret["attrs"], question)
+    secret_answer = await evaluate_question(ep["secret_id"], secret["name"], secret["attrs"], question)
 
     if secret_answer == "unknown":
         ep["invalid_questions"] += 1
@@ -206,7 +216,7 @@ async def ask_freeform(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, 'Obj
     # Evaluate against all remaining candidates in parallel
     async def eval_candidate(oid: str) -> tuple[str, str]:
         obj = objects_by_id[oid]
-        answer = await evaluate_question(obj["name"], obj["attrs"], question)
+        answer = await evaluate_question(oid, obj["name"], obj["attrs"], question)
         return oid, answer
 
     results = await asyncio.gather(
