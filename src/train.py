@@ -9,7 +9,7 @@ import art
 from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
-from environment import rollout, Scenario20Q, objects
+from environment import rollout, Scenario20Q, objects, objects_by_id
 from configs import get_agent_config
 
 import warnings
@@ -21,7 +21,7 @@ os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 
 # Load environment variables
 load_dotenv()
-random.seed(42)
+# Seed set later from --seed arg
 
 # At the top of train.py
 training_stats = {
@@ -131,27 +131,58 @@ def print_training_summary():
     print(f"{'='*60}\n")
 
 
-async def run_evaluation(model_name: str, project: str, reward_fn: str, n_episodes: int = 20):
-    """Quick evaluation during training"""
+def extract_trajectory_log(trajectory, secret_id: str, step: int) -> dict:
+    """Extract tool-call sequence from a trajectory for skill annotation."""
+    tool_calls = []
+    for item in trajectory.messages_and_choices:
+        # Check for Choice objects (assistant turns with tool calls)
+        if hasattr(item, 'message'):
+            msg = item.message
+            if getattr(msg, 'tool_calls', None):
+                for tc in msg.tool_calls:
+                    tool_calls.append({
+                        "tool": tc.function.name,
+                        "args": json.loads(tc.function.arguments or "{}"),
+                    })
+        # Check for tool response dicts
+        elif isinstance(item, dict) and item.get("role") == "tool":
+            if tool_calls:
+                tool_calls[-1]["result"] = json.loads(item.get("content", "{}"))
+
+    secret_name = objects_by_id.get(secret_id, {}).get("name", secret_id)
+    return {
+        "step": step,
+        "secret_id": secret_id,
+        "secret_name": secret_name,
+        "metrics": dict(trajectory.metrics),
+        "reward": trajectory.reward,
+        "tool_calls": tool_calls,
+    }
+
+
+async def run_evaluation(model_name: str, project: str, reward_fn: str,
+                         n_episodes: int = 20, save_trajectories: str = None,
+                         prompt_version: str = "v4"):
+    """Quick evaluation during training. Optionally saves full trajectories to JSONL."""
     print(f"\n{'='*60}")
-    print(f"🔍 EVALUATION at current checkpoint")
+    print(f"EVALUATION at current checkpoint")
     print(f"{'='*60}")
-    
+
     eval_model = art.TrainableModel(
         name=model_name,
         project=project,
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
-    
+
     eval_backend = ServerlessBackend()
     await eval_model.register(eval_backend)
-    
+
     current_step = await eval_model.get_step()
     print(f"Evaluating model at step: {current_step}")
-    
+
     # Eval on random secrets
     eval_secrets = random.sample([o["id"] for o in objects], min(n_episodes, len(objects)))
-    
+
     results = {
         "correct": 0,
         "wrong": 0,
@@ -159,39 +190,55 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str, n_episod
         "total_questions": 0,
         "total_candidates": 0,
     }
-    
+    trajectory_logs = []
+
     for secret_id in eval_secrets:
         try:
             trajectory = await rollout(
                 eval_model,
-                Scenario20Q(step=current_step, secret_id=secret_id, reward_fn=reward_fn)
+                Scenario20Q(step=current_step, secret_id=secret_id,
+                           reward_fn=reward_fn, prompt_version=prompt_version,
+                           use_oracle=False)
             )
-            
+
             if trajectory.metrics.get("correct") == 1:
                 results["correct"] += 1
             elif trajectory.metrics.get("guessed") == 1:
                 results["wrong"] += 1
             else:
                 results["timeout"] += 1
-            
+
             results["total_questions"] += trajectory.metrics.get("questions_asked", 0)
             results["total_candidates"] += trajectory.metrics.get("final_candidates", 0)
+
+            # Save trajectory for skill annotation
+            trajectory_logs.append(
+                extract_trajectory_log(trajectory, secret_id, current_step)
+            )
         except Exception as e:
             print(f"  Eval error: {e}")
             continue
-    
+
     total = len(eval_secrets)
     accuracy = results["correct"] / total if total > 0 else 0
     avg_questions = results["total_questions"] / total if total > 0 else 0
     avg_candidates = results["total_candidates"] / total if total > 0 else 0
-    
-    print(f"\n📊 EVAL RESULTS (step {current_step}):")
+
+    print(f"\nEVAL RESULTS (step {current_step}):")
     print(f"  Accuracy: {accuracy:.1%} ({results['correct']}/{total})")
     print(f"  Wrong: {results['wrong']}, Timeout: {results['timeout']}")
     print(f"  Avg questions: {avg_questions:.1f}")
     print(f"  Avg candidates remaining: {avg_candidates:.1f}")
     print(f"{'='*60}\n")
-    
+
+    # Save trajectories to JSONL
+    if save_trajectories:
+        traj_file = f"{save_trajectories}_step{current_step}.jsonl"
+        with open(traj_file, "w") as f:
+            for log in trajectory_logs:
+                f.write(json.dumps(log) + "\n")
+        print(f"  Saved {len(trajectory_logs)} trajectories to {traj_file}")
+
     return results
 
 
@@ -201,12 +248,24 @@ async def main():
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--run-label", type=str, default=None, help="Label for grouping runs (e.g. 'run1')")
     args = parser.parse_args()
-    
+
+    # Set seed early
+    random.seed(args.seed)
+
     config = get_agent_config(args.agent)
 
+    # Build run name with seed suffix
+    run_name = config["name"]
+    if args.run_label:
+        run_name = f"{args.run_label}-seed{args.seed}"
+    else:
+        run_name = f"{config['name']}-seed{args.seed}"
+
     # Set consistent WandB run ID to prevent fragmentation
-    os.environ["WANDB_RUN_ID"] = config["name"]
+    os.environ["WANDB_RUN_ID"] = run_name
     os.environ["WANDB_RESUME"] = "allow"
 
     # Initialize Weave (DISABLED to save costs)
@@ -216,49 +275,72 @@ async def main():
     #     global_postprocess_output=strip_logprobs
     # )
     
+    # Trajectory log directory
+    traj_dir = f"trajectories/{run_name}"
+    os.makedirs(traj_dir, exist_ok=True)
+
+    print(f"Run: {run_name} | Seed: {args.seed} | Agent: {args.agent}")
+    print(f"Reward: {config['reward_fn']} | Prompt: {config['prompt_version']}")
+    print(f"Trajectories saved to: {traj_dir}/")
+
     # Create model
     model = art.TrainableModel(
         name=config["name"],
         project=config["project"],
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
-    
+
     backend = ServerlessBackend()
     await model.register(backend)
-    
+
     # Prepare secrets for training
     secrets = [o["id"] for o in objects]
     random.shuffle(secrets)
-    
+
     BATCH = args.batch_size
     N = len(secrets)
-    
+
     start_step = await model.get_step()
     end_step = start_step + args.steps
     print(f"Starting training from step {start_step} to {end_step}")
-    
+
+    # --- Step-0 baseline eval (before any GRPO training) ---
+    print("\n--- BASELINE EVAL (step 0, pre-training) ---")
+    try:
+        await run_evaluation(
+            config["name"],
+            config["project"],
+            config["reward_fn"],
+            n_episodes=20,
+            save_trajectories=f"{traj_dir}/eval",
+            prompt_version=config["prompt_version"],
+        )
+    except Exception as e:
+        print(f"Baseline evaluation failed: {e}")
+
     for i in range(start_step, end_step):
         print(f"\n=== Step {i + 1}/{end_step} ===")
-        
+
         # Cycle through secrets
         start = (i * BATCH) % N
         step_secrets = secrets[start : start + BATCH]
         if len(step_secrets) < BATCH:
             step_secrets += secrets[: (BATCH - len(step_secrets))]
-        
+
         print(f"Gathering trajectories for {len(step_secrets)} secrets...")
         train_groups = await art.gather_trajectory_groups(
             (
                 art.TrajectoryGroup(
                     rollout(
-                        model, 
+                        model,
                         Scenario20Q(
-                            step=i, 
+                            step=i,
                             secret_id=sid,
                             reward_fn=config["reward_fn"],
-                            prompt_version=config["prompt_version"]
+                            prompt_version=config["prompt_version"],
+                            use_oracle=False,
                         )
-                    ) 
+                    )
                     for _ in range(10)
                 )
                 for sid in step_secrets
@@ -266,50 +348,53 @@ async def main():
             pbar_desc="gather",
             max_exceptions=60,
         )
-        
+
         print(f"Training on step {i}...")
         await model.delete_checkpoints("train/reward")
-        
+
         # Train with retry logic
         try:
             await train_with_retry(backend, model, train_groups, config, step_num=i+1)
-            print(f"✅ Step {i + 1} complete!")
         except Exception as e:
-            print(f"❌ Step {i + 1} failed after retries: {e}")
+            print(f"Step {i + 1} failed after retries: {e}")
             print("Continuing to next step...")
             continue
 
         # Print summary every 10 steps
         if (i + 1) % 10 == 0:
             print_training_summary()
-        
+
         # Run evaluation every N steps
         if args.eval_every > 0 and (i + 1) % args.eval_every == 0:
             try:
                 await run_evaluation(
-                    config["name"], 
-                    config["project"], 
+                    config["name"],
+                    config["project"],
                     config["reward_fn"],
-                    n_episodes=20
+                    n_episodes=20,
+                    save_trajectories=f"{traj_dir}/eval",
+                    prompt_version=config["prompt_version"],
                 )
             except Exception as e:
-                print(f"⚠️  Evaluation failed: {e}")
+                print(f"Evaluation failed: {e}")
                 print("Continuing training...")
-    
+
     # Final summary
     print(f"\n{'='*60}")
-    print(f"🎉 Training complete! Finished steps {start_step} to {end_step}")
+    print(f"Training complete! Finished steps {start_step} to {end_step}")
     print(f"{'='*60}")
     print_training_summary()
-    
-    # Final evaluation
-    print("\n🏁 Running final evaluation...")
+
+    # Final evaluation (larger sample, save trajectories)
+    print("\nRunning final evaluation...")
     try:
         await run_evaluation(
-            config["name"], 
-            config["project"], 
+            config["name"],
+            config["project"],
             config["reward_fn"],
-            n_episodes=50
+            n_episodes=50,
+            save_trajectories=f"{traj_dir}/final_eval",
+            prompt_version=config["prompt_version"],
         )
     except Exception as e:
         print(f"Final evaluation failed: {e}")
