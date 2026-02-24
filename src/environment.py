@@ -136,8 +136,8 @@ def submit_guess(ep: TwentyQuestionsEpisode, object_id: str) -> bool:
 # --- FREEFORM QUESTION JUDGE ---
 
 _judge_client = None
-_judge_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent judge calls
-_judge_cache: dict[tuple[str, str], str] = {}  # (object_id, question) -> answer
+_judge_semaphore = asyncio.Semaphore(100)  # Max 100 concurrent judge calls
+_judge_cache: dict[tuple[str, str], str] = {}  # (object_id, normalized_question) -> answer
 
 def _get_judge_client():
     global _judge_client
@@ -146,38 +146,39 @@ def _get_judge_client():
     return _judge_client
 
 
-JUDGE_PROMPT = """You are a yes/no question judge for a 20 Questions game.
+def _normalize_question(question: str) -> str:
+    """Normalize question for cache key: lowercase, strip, collapse whitespace, remove trailing ?"""
+    import re
+    q = question.strip().lower()
+    q = re.sub(r'\s+', ' ', q)
+    q = q.rstrip('?').strip()
+    return q
 
-Given an object and its boolean attributes, answer the player's yes/no question.
+
+JUDGE_PROMPT = """Yes/no judge for 20 Questions.
 
 Object: {object_name}
-Attributes (true means the object has this property):
-{attrs_text}
+True attributes: {true_attrs}
 
-Player's question: "{question}"
+Question: "{question}"
 
-Based on the object's attributes and your general knowledge about "{object_name}", answer:
-- "yes" if the answer is clearly yes
-- "no" if the answer is clearly no
-- "unknown" if the question cannot be reliably answered
-
-Respond with ONLY one word: yes, no, or unknown"""
+Answer "yes", "no", or "unknown" (one word only)."""
 
 
 async def evaluate_question(object_id: str, object_name: str, attrs: dict[str, bool], question: str) -> str:
     """Call LLM judge to evaluate a freeform yes/no question against an object.
 
-    Results are cached by (object_id, question) so repeated questions across
-    GRPO rollouts don't require additional judge calls.
+    Results are cached by (object_id, normalized_question) so repeated questions
+    across GRPO rollouts don't require additional judge calls.
     """
-    cache_key = (object_id, question.strip().lower())
+    cache_key = (object_id, _normalize_question(question))
     if cache_key in _judge_cache:
         return _judge_cache[cache_key]
 
-    attrs_text = "\n".join(f"  {k}: {v}" for k, v in sorted(attrs.items()))
+    true_attrs = [k for k, v in sorted(attrs.items()) if v]
     prompt = JUDGE_PROMPT.format(
         object_name=object_name,
-        attrs_text=attrs_text,
+        true_attrs=", ".join(true_attrs) if true_attrs else "(none)",
         question=question,
     )
 
@@ -197,6 +198,46 @@ async def evaluate_question(object_id: str, object_name: str, attrs: dict[str, b
 
     _judge_cache[cache_key] = answer
     return answer
+
+
+# Common first questions for cache pre-warming
+_PREWARM_QUESTIONS = [
+    "Is it a living thing?",
+    "Is it an animal?",
+    "Is it a plant?",
+    "Is it man-made?",
+    "Is it a place?",
+    "Is it food?",
+    "Is it bigger than a car?",
+    "Can you hold it in your hand?",
+    "Is it found indoors?",
+    "Is it something you can eat?",
+    "Is it a type of vehicle?",
+    "Is it electronic?",
+    "Is it clothing?",
+    "Is it a natural object?",
+    "Is it used for entertainment?",
+    "Can it move on its own?",
+    "Is it something you find in a kitchen?",
+    "Is it a body of water?",
+    "Is it a sport or game?",
+    "Is it a musical instrument?",
+]
+
+
+async def prewarm_judge_cache(objects_list: list['Obj']) -> int:
+    """Pre-evaluate common questions against all objects to warm the cache.
+
+    Returns the number of cache entries added.
+    """
+    before = len(_judge_cache)
+    tasks = []
+    for obj in objects_list:
+        for q in _PREWARM_QUESTIONS:
+            tasks.append(evaluate_question(obj["id"], obj["name"], obj["attrs"], q))
+    await asyncio.gather(*tasks)
+    added = len(_judge_cache) - before
+    return added
 
 
 async def ask_freeform(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, 'Obj'], question: str) -> str:
