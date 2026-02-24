@@ -349,3 +349,207 @@ This is a **fundamental limitation of the LLM-judge approach**: the judge must b
 - Option A: Launch full 50-step run with 20 objects to see if GRPO can improve even within the noisy ceiling. If accuracy moves from 25% → 40%, that's signal even if the ceiling is low.
 - Option B: Improve the judge first. Options: use a stronger model (gpt-5-mini), add self-consistency (majority vote of 3 judge calls), or pre-compute a ground-truth answer matrix for common questions.
 - Option C: Measure question quality directly — track average candidate reduction per question across training steps. If GRPO learns to ask better questions, candidate reduction should improve even if final accuracy doesn't (due to judge noise).
+
+---
+
+### Run 3c (full object set, optimized judge) — 2026-02-24
+
+**Hypothesis:** Run 3b showed the base model already asks near-optimal questions on 20 objects, but judge noise capped accuracy at ~25%. Run 3c scales to the full 76 objects to test whether (a) the base model's question quality holds at full scale, and (b) GRPO produces any training signal when the base model is already competent. We expect candidate reduction per question to be flat across training steps (no GRPO learning), and accuracy to remain bounded by judge noise.
+
+**Setup:**
+- Model: OpenPipe/Qwen3-14B-Instruct (base, no SFT)
+- RL: GRPO via ART ServerlessBackend
+- Reward: v5 (narrowing bonus, suicide-guess penalty)
+- Prompt: v6 (freeform)
+- Steps: 5 (smoke test), seed 1
+- **All 76 objects** (vs 20 in Run 3b)
+- W&B run: `run3-smoke-v4-seed1`
+
+**Changes from Run 3b:**
+1. **Full 76-object set** — tests whether question quality degrades with more candidates and whether judge noise compounds worse at scale (76 judge calls/question vs 20).
+2. **Judge cache pre-warming** — 20 common questions × 76 objects = 1,520 entries cached before training. Eliminates cold-start latency for frequent questions like "Is it alive?".
+3. **Trimmed judge prompt** — reduced token count for faster inference.
+4. **Higher concurrency** — semaphore bumped to 100 for parallel judge calls.
+
+**Results (smoke test: `run3-smoke-v4-seed1`, 76 objects, 5 steps):**
+
+| Metric | Step 0 (baseline) | Step 1 | Step 2 | Step 3 | Step 4 | Step 5 |
+|--------|-------------------|--------|--------|--------|--------|--------|
+| Accuracy | 30.0% (6/20) | — | — | — | — | TBD |
+| Avg questions | 9.7 | 9.5 | 9.4 | 9.2 | 10.1 | TBD |
+| Avg final candidates | 5.9 | 3.5 | 9.5 | 5.8 | 5.1 | TBD |
+| Avg reward | — | -10.8 | -0.6 | -1.9 | -4.0 | TBD |
+| Correct rate (train) | — | 0.15 | 0.42 | 0.37 | 0.33 | TBD |
+
+_Step 5 in progress (82% gathered). Mid-training and final eval TBD._
+
+**Preliminary observations:**
+
+1. **Baseline accuracy 30% on 76 objects** (vs 25% on 20 objects in Run 3b). Surprisingly not worse at full scale — the base model handles 76 objects as well as 20.
+
+2. **Higher avg candidates remaining (5.9 vs 1.0 in Run 3b).** With 76 objects, the agent needs more questions to narrow down, and judge noise has more room to compound. 5.9 remaining after ~10 questions means the agent is still narrowing significantly (76→6 is ~3.7 halvings) but not reaching the single-candidate precision seen with 20 objects.
+
+3. **Training metrics show high variance.** Reward swings from -10.8 (step 1) to -0.6 (step 2) to -4.0 (step 4). Correct rate fluctuates 0.15-0.42. This noise is consistent with judge inconsistency dominating the reward signal.
+
+4. **No clear GRPO learning trend yet.** Questions asked stays ~9-10, candidate reduction shows no monotonic improvement. Need final eval to compare step-0 vs step-5 properly.
+
+**Skill acquisition:** TBD (pending final eval trajectories)
+
+**Interpretation:** TBD (pending completion)
+
+**Cost:** TBD
+
+---
+
+### Run 3 — Post-Mortem (shelved) — 2026-02-24
+
+**Decision:** Shelving Run 3 (free-form questions). The approach has two compounding problems that make it unsuitable for testing the thesis.
+
+**Problem 1: Low throughput makes GRPO training impractical.**
+
+Each freeform question requires N judge calls (one per remaining candidate). With 76 objects, that's ~77 calls for the first question, ~38 for the second, etc. — roughly 150 judge calls per episode. A single GRPO step (6 secrets × 10 rollouts = 60 episodes) needs ~9,000 judge calls. Even with all optimizations applied (cache pre-warming of 1,520 entries, semaphore at 100, trimmed prompts), a 5-step smoke test could not complete its final evaluation within reasonable time. The run hung on step 5's eval phase indefinitely.
+
+For comparison: predefined mode runs a full 50-step training in ~2 hours. Freeform mode couldn't finish 5 steps. The 50-step run needed for meaningful GRPO signal would take days and cost significantly more in both judge API fees and ART compute time (the model sits idle while waiting for judge calls).
+
+The infrastructure optimizations helped but couldn't overcome the fundamental O(N × API_latency) per question:
+
+| Optimization | Impact |
+|---|---|
+| Judge cache (cross-rollout) | ~5-8x reduction for repeated questions |
+| Pre-warm 20 questions × 76 objects | Eliminated cold-start for common questions |
+| Semaphore 20→100 | ~2x throughput improvement |
+| Trimmed prompt (true attrs only) | ~60% fewer input tokens, marginal speed gain |
+| **Net effect** | Still too slow for 50-step training |
+
+**Problem 2: Unreliable judge makes reward signal uninterpretable.**
+
+Evidence from trajectory sampling (Run 3b, 5 eval episodes from base model):
+
+| Episode | Object | Questions | Final candidates | Correct | Behavior |
+|---|---|---|---|---|---|
+| 1 | Ice Cream | 8 | 1 | Yes | Clean narrowing: "Is it a living thing?" → "Is it man-made?" → "Is it something you can eat?" → correct |
+| 2 | Microwave | 0 | 76 | No | `get_candidate_count` loop ×25, never asked a question |
+| 3 | Paper | 0 | 76 | No | `get_candidate_count` loop ×25, never asked a question |
+| 4 | Hat | 11 | 1 | Yes | Good narrowing but asked "Is it something you wear on your head?" twice (redundant) |
+| 5 | T-shirt | 0 | 76 | No | `get_candidate_count` loop ×25, never asked a question |
+
+The 2 successful episodes show the base model already asks good questions from pretraining — "Is it a living thing?", "Is it man-made?", "Is it something you can eat?" are textbook binary search. But 3/5 episodes degenerate to the `get_candidate_count` safe-haven loop (same failure as Run 1).
+
+More critically, judge accuracy testing revealed systematic failures:
+
+| Question | Object | Expected | Judge said |
+|---|---|---|---|
+| "Is it an animal?" | Dog | yes | **yes** |
+| "Is it an animal?" | Car | no | **no** |
+| "Is it man-made?" | Dog | no | **unknown** |
+| "Is it man-made?" | Car | yes | **unknown** |
+
+The judge returned "unknown" for basic questions like "Is it man-made?" because gpt-5-nano's reasoning tokens couldn't reliably infer the answer from the attribute list (no `is_man_made` attribute exists — the judge must use general knowledge). This means:
+- Questions that should bisect the candidate set instead get penalized as invalid (-0.5)
+- Candidate filtering is noisy: the wrong objects survive or get eliminated
+- The agent's reward signal reflects judge quality, not question quality
+
+Run 3b confirmed this at scale: accuracy was 25% despite narrowing to ~1 candidate. The agent asked good questions and narrowed correctly, but judge noise during filtering led to the wrong final candidate ~75% of the time.
+
+**Why this matters for the thesis:**
+
+The thesis question for Run 3 was: "Can GRPO learn to ask discriminating free-form questions?" We can't answer it because:
+
+1. The reward signal is dominated by judge noise, not agent quality. GRPO would be optimizing for "ask questions the judge happens to evaluate consistently" rather than "ask questions that maximally split candidates."
+2. We can't distinguish "GRPO failed to learn" from "GRPO learned but the judge undermined it."
+3. The base model already asks good questions (episodes 1 and 4 show near-optimal binary search from pretraining), so there's limited room for GRPO to improve even with a perfect judge.
+
+**What we learned anyway:**
+
+1. **LLM-as-judge environments have fundamentally different economics.** Predefined mode: O(1) per question, deterministic. Freeform mode: O(N × API_latency) per question, stochastic. This isn't a hyperparameter issue — it's a structural incompatibility with GRPO's need for high-volume rollouts.
+
+2. **Judge consistency matters more than judge accuracy.** A judge that's wrong but consistent across objects still produces valid candidate filtering. A judge that's 95% accurate but inconsistent across objects introduces multiplicative noise that compounds across questions. For 20Q filtering, consistency > accuracy.
+
+3. **The base model already has freeform questioning from pretraining.** Episodes 1 and 4 show Qwen-14B asking "Is it a living thing?", "Is it man-made?", "Is it something you can eat?" without any training. This mirrors Run 1's finding: skills 1-3 come from pretraining, not RL.
+
+4. **Open-ended action spaces don't automatically make problems harder for the agent.** The agent's question quality was fine — the environment's evaluation was the bottleneck. This is an important design lesson: freeform environments need reliable judges before they can test RL capabilities.
+
+**What would make Run 3 viable:**
+
+- A deterministic judge (pre-computed answer matrix for all object × question pairs) — but this collapses back to predefined mode
+- A much stronger judge model (gpt-5.2) — but at $1.75/1M input tokens, the cost for 50 GRPO steps would exceed the entire project budget
+- Self-consistency voting (3 judge calls, majority vote) — reduces noise but triples cost and latency
+- Smaller object set (8-10 objects) — reduces judge calls but also reduces the RL challenge
+
+None of these solve both problems simultaneously within budget.
+
+---
+
+## Run 4a — Answer Corruption Smoke Test — 2026-02-24
+
+**Hypothesis:** The SFT-trained model (Run 2, ~95% on clean episodes) will degrade under 15% answer corruption. GRPO may teach the model to detect inconsistencies (e.g., candidate count not decreasing as expected) and adapt — using `get_candidate_count` to verify, re-asking attributes, or guessing earlier when uncertain. If SFT+GRPO holds higher accuracy than SFT-only under corruption, GRPO taught resilience.
+
+**Setup:**
+- Model: `run2-sft-v2` checkpoint (SFT-trained, ~95% clean accuracy)
+- RL: GRPO via ART ServerlessBackend
+- Reward: v5
+- Prompt: v4
+- Perturbation: answer_corruption at 15% rate
+- Steps: 5 (smoke test), seed 42
+- 20 objects (subset)
+- W&B run: `run4a-smoke-seed42`
+
+**Results:**
+
+| Metric | Step 0 (SFT baseline) | Step 5 (SFT+GRPO) |
+|--------|----------------------|-------------------|
+| Accuracy | 10% (2/20) | 5% (1/20) |
+| Wrong guesses | 16 | 14 |
+| Timeouts | 2 | 5 |
+| Avg questions | 6.3 | 7.3 |
+| Avg candidates remaining | 0.8 | 0.7 |
+| Avg corrupted questions | ~0.95/episode | ~1.17/episode |
+
+**W&B Training Charts (5 steps):**
+
+- **train/correct:** Oscillates 0.0–0.1 across all steps. Nearly zero positive signal for GRPO to amplify. The one spike to ~0.1 at step 4 doesn't sustain.
+- **train/reward:** Stuck at -8 to -9.5, all negative, no upward trend. The model is consistently penalized.
+- **train/reward_std_dev:** Starts ~5, dips at step 3, spikes to ~9 at step 4. Unlike Run 1's collapse (std_dev → 0), there IS variance here — but it comes from corruption randomness, not from the model learning different strategies. High std_dev with no reward improvement = noisy environment, not useful exploration.
+- **train/guessed:** Drops from 0.85 → 0.65–0.80 over 5 steps. The model is guessing less, trending toward timeouts — early signs of the same safe-haven drift from Run 1.
+- **train/corrupted_questions:** Oscillates 1.0–1.4 per episode. With ~7.5 questions at 15% rate, expected is ~1.1. Matches expectations — corruption is being applied correctly.
+- **train/candidate_reduction:** Flat at ~19.2 (out of 20 objects). The model narrows aggressively regardless of corruption — it just narrows to the *wrong* candidate. This is the core problem: corruption poisons the filtering, not the narrowing behavior.
+- **train/grad_norm:** Low (~0.2) for steps 0-3, spikes to 0.45 at step 4. The model makes large parameter updates based on noisy signal at step 4 — likely why step 5 eval degraded further.
+- **train/forced_questions** and **train/disabled_attributes:** Correctly at 0 for 4a. Perturbation metrics logging correctly.
+
+**Trajectory Analysis (6 episodes per eval, detailed):**
+
+Failure patterns observed:
+
+1. **Silent corruption acceptance.** Agent asks a corrupted question, gets a wrong answer, and doesn't notice. Candidate filtering proceeds based on the flipped answer, narrowing to ~1 candidate — but the wrong one. The agent guesses confidently and is wrong.
+
+2. **No verification after questions.** The model sometimes calls `get_top_candidates` or `get_candidate_count` (~50% of episodes), but never acts on anomalies. When it receives 0 candidates or an empty list, it either guesses anyway or keeps asking pointlessly.
+
+3. **Catastrophic loops under contradiction.** When corruption produces contradictory answers, the model falls into repeating the same 2-3 questions. Worst case: `is_food`/`is_edible` asked 8 times in alternation until hitting the 15-question limit. The SFT-memorized sequence has no escape hatch for contradictory state.
+
+4. **GRPO degradation.** Step 5 shows more looping, more timeouts (2→5), and lower accuracy (10%→5%). GRPO reinforced fixed sequences rather than encouraging adaptive behavior. With ~5-10% correct rate during training, there's almost no positive signal for GRPO to amplify.
+
+**Skill acquisition:**
+
+| Skill | Step 0 | Step 5 |
+|-------|--------|--------|
+| 1. Tool use | 20/20 | 20/20 |
+| 2. Sequencing | 18/20 | 15/20 (more timeouts) |
+| 3. State awareness (calls get_candidate_count) | ~10/20 | ~10/20 |
+| 4. History tracking | poor (repeating questions under corruption) | worse (more loops) |
+| 5. Error detection | 0/20 | 0/20 |
+| 6. Recovery | 0/20 | 0/20 |
+
+**Interpretation:**
+
+This is a meaningful negative result. Answer corruption at 15% is **fundamentally undetectable** by the agent because the corruption is invisible — the environment state is self-consistent after the flip. Detecting corruption would require the model to reason: "I asked `is_animal` and got `yes`, but the remaining candidates include `Desk` — that's inconsistent." That's cross-referencing world knowledge against tool outputs — exactly the kind of algorithmic reasoning our thesis says GRPO can't teach.
+
+The 95% → 10% accuracy drop from corruption alone (before any GRPO) shows how brittle the SFT strategy is. It memorized a fixed question sequence that works perfectly when answers are correct, but has zero robustness to noise. GRPO couldn't help because:
+1. The corruption is invisible to the agent (no observable signal to learn from)
+2. The correct rate during training (~5-10%) provides near-zero positive signal
+3. Recovery would require reasoning (detecting inconsistency), not just behavioral adaptation
+
+**This distinguishes 4a from 4b/4c:** Answer corruption poisons the state silently. Forced bad start (4b) and attribute removal (4c) are observable — the agent sees unfamiliar candidate sets or "unknown" responses. Those are behavioral challenges the model can potentially adapt to.
+
+**Cost:** ~$1.50 (5 GRPO steps + 2 evals)
+
+**Next:** Proceed to 4b (forced bad start) and 4c (attribute removal) smoke tests. These test behavioral adaptation rather than reasoning — the perturbations are visible to the agent, which our thesis predicts GRPO can learn from.
