@@ -127,8 +127,13 @@ After every run, produce an entry in this format:
 **Next:** [What to change based on this]
 ```
 ## 14. Git & Execution Guardrails (Strict)
+
+**Remotes:**
+- `private` (`PeterWofford/art-20q-experiments-2026`) — all branches and PRs go here. This is the working repo.
+- `origin` (`PeterWofford/20q-rl-project`) — public repo. NEVER push branches or create PRs here.
+
 Before executing ANY training run or experiment script (e.g., `python src/train.py`), you MUST follow this exact sequence:
 1. **Commit:** Stage and commit all code changes with a descriptive message.
-2. **Branch & Push:** Push the changes to a new branch on the `private` remote (NOT `origin`).
-3. **Merge Request:** Provide me with the URL to open a Pull/Merge Request, or use the GitHub CLI (`gh pr create`) if available.
+2. **Branch & Push:** Push the changes to a new branch on the `private` remote. NEVER push to `origin`.
+3. **Merge Request:** Create a PR on the `private` repo using `gh pr create --repo PeterWofford/art-20q-experiments-2026`. NEVER create PRs on `origin`.
 4. **Pause:** Ask for my explicit permission before running the training script. NEVER run a training job without this Git workflow happening first.
