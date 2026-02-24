@@ -293,9 +293,9 @@ async def main():
     print(f"Reward: {config['reward_fn']} | Prompt: {config['prompt_version']}")
     print(f"Trajectories saved to: {traj_dir}/")
 
-    # Create model
+    # Create model — use run_name so each seed gets a fresh checkpoint
     model = art.TrainableModel(
-        name=config["name"],
+        name=run_name,
         project=config["project"],
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
@@ -318,7 +318,7 @@ async def main():
     print("\n--- BASELINE EVAL (step 0, pre-training) ---")
     try:
         await run_evaluation(
-            config["name"],
+            run_name,
             config["project"],
             config["reward_fn"],
             n_episodes=20,
@@ -378,7 +378,7 @@ async def main():
         if args.eval_every > 0 and (i + 1) % args.eval_every == 0:
             try:
                 await run_evaluation(
-                    config["name"],
+                    run_name,
                     config["project"],
                     config["reward_fn"],
                     n_episodes=20,
@@ -399,7 +399,7 @@ async def main():
     print("\nRunning final evaluation...")
     try:
         await run_evaluation(
-            config["name"],
+            run_name,
             config["project"],
             config["reward_fn"],
             n_episodes=50,
