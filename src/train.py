@@ -9,8 +9,9 @@ import art
 from art.serverless.backend import ServerlessBackend
 from art.utils.strip_logprobs import strip_logprobs
 
+from dataclasses import asdict
 from environment import rollout, Scenario20Q, objects, objects_by_id, prewarm_judge_cache
-from configs import get_agent_config
+from configs import get_agent_config, ExperimentConfig
 
 import warnings
 import os
@@ -63,16 +64,27 @@ def log_step_result(step: int, success: bool, error: str = None):
     return result
 
 
-async def train_with_retry(backend, model, train_groups, config, step_num: int, max_retries=5):
+async def train_with_retry(backend, model, train_groups, config: ExperimentConfig, step_num: int, max_retries=5):
     """Train with exponential backoff on 502/524 errors"""
     training_stats["attempted"] += 1
-    
+
     for attempt in range(max_retries):
         try:
+            train_kwargs = {"learning_rate": config.learning_rate}
+            if config.ppo:
+                train_kwargs["ppo"] = True
+            if config.epsilon is not None:
+                train_kwargs["epsilon"] = config.epsilon
+            if config.epsilon_high is not None:
+                train_kwargs["epsilon_high"] = config.epsilon_high
+            if config.beta != 0.0:
+                train_kwargs["beta"] = config.beta
+            if not config.scale_rewards:
+                train_kwargs["scale_rewards"] = False
             result = await backend.train(
-                model, 
-                train_groups, 
-                learning_rate=config["learning_rate"]
+                model,
+                train_groups,
+                **train_kwargs
             )
             await model.log(train_groups, metrics=result.metrics, step=result.step, split='train')
             
@@ -160,18 +172,16 @@ def extract_trajectory_log(trajectory, secret_id: str, step: int) -> dict:
     }
 
 
-async def run_evaluation(model_name: str, project: str, reward_fn: str,
-                         n_episodes: int = 20, save_trajectories: str = None,
-                         prompt_version: str = "v4", question_mode: str = "predefined",
-                         perturbation_type: str = "none", perturbation_rate: float = 0.0):
+async def run_evaluation(config: ExperimentConfig, eval_model_name: str,
+                         n_episodes: int = 20, save_trajectories: str = None):
     """Quick evaluation during training. Optionally saves full trajectories to JSONL."""
     print(f"\n{'='*60}")
     print(f"EVALUATION at current checkpoint")
     print(f"{'='*60}")
 
     eval_model = art.TrainableModel(
-        name=model_name,
-        project=project,
+        name=eval_model_name,
+        project=config.project,
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
 
@@ -197,11 +207,7 @@ async def run_evaluation(model_name: str, project: str, reward_fn: str,
         try:
             trajectory = await rollout(
                 eval_model,
-                Scenario20Q(step=current_step, secret_id=secret_id,
-                           reward_fn=reward_fn, prompt_version=prompt_version,
-                           use_oracle=False, question_mode=question_mode,
-                           perturbation_type=perturbation_type,
-                           perturbation_rate=perturbation_rate)
+                Scenario20Q.from_config(config, step=current_step, secret_id=secret_id)
             )
 
             if trajectory.metrics.get("correct") == 1:
@@ -256,6 +262,7 @@ async def main():
     parser.add_argument("--num-objects", type=int, default=None, help="Subset to N objects (default: all 76). Use fewer for faster smoke tests in freeform mode.")
     parser.add_argument("--perturbation-type", type=str, default=None, choices=["none", "answer_corruption", "forced_bad_start", "attribute_removal"], help="Override perturbation type from config")
     parser.add_argument("--perturbation-rate", type=float, default=None, help="Override perturbation rate from config")
+    parser.add_argument("--group-size", type=int, default=None, help="Override GRPO group size from config")
     args = parser.parse_args()
 
     # Set seed early
@@ -277,16 +284,19 @@ async def main():
 
     config = get_agent_config(args.agent)
 
-    # Resolve perturbation settings: CLI overrides config
-    perturbation_type = args.perturbation_type or config.get("perturbation_type", "none")
-    perturbation_rate = args.perturbation_rate if args.perturbation_rate is not None else config.get("perturbation_rate", 0.0)
+    # CLI overrides mutated directly onto config
+    if args.perturbation_type is not None:
+        config.perturbation_type = args.perturbation_type
+    if args.perturbation_rate is not None:
+        config.perturbation_rate = args.perturbation_rate
+    if args.group_size is not None:
+        config.group_size = args.group_size
 
     # Build run name with seed suffix
-    run_name = config["name"]
     if args.run_label:
         run_name = f"{args.run_label}-seed{args.seed}"
     else:
-        run_name = f"{config['name']}-seed{args.seed}"
+        run_name = f"{config.name}-seed{args.seed}"
 
     # Set consistent WandB run ID to prevent fragmentation
     os.environ["WANDB_RUN_ID"] = run_name
@@ -294,15 +304,12 @@ async def main():
 
     # Initialize W&B — all runs log to the canonical project
     wandb.init(project="art-20q-runner-2026", name=run_name, config={
+        **asdict(config),
         "agent": args.agent,
         "seed": args.seed,
         "steps": args.steps,
         "batch_size": args.batch_size,
-        "reward_fn": config["reward_fn"],
-        "prompt_version": config["prompt_version"],
         "num_objects": len(objects),
-        "perturbation_type": perturbation_type,
-        "perturbation_rate": perturbation_rate,
     })
 
     # Initialize Weave (DISABLED to save costs)
@@ -317,15 +324,15 @@ async def main():
     os.makedirs(traj_dir, exist_ok=True)
 
     print(f"Run: {run_name} | Seed: {args.seed} | Agent: {args.agent}")
-    print(f"Reward: {config['reward_fn']} | Prompt: {config['prompt_version']}")
-    if perturbation_type != "none":
-        print(f"Perturbation: {perturbation_type} (rate={perturbation_rate})")
+    print(f"Reward: {config.reward_fn} | Prompt: {config.prompt_version}")
+    if config.perturbation_type != "none":
+        print(f"Perturbation: {config.perturbation_type} (rate={config.perturbation_rate})")
     print(f"Trajectories saved to: {traj_dir}/")
 
     # Create model — use run_name so each seed gets a fresh checkpoint
     model = art.TrainableModel(
         name=run_name,
-        project=config["project"],
+        project=config.project,
         base_model="OpenPipe/Qwen3-14B-Instruct",
     )
 
@@ -344,7 +351,7 @@ async def main():
     print(f"Starting training from step {start_step} to {end_step}")
 
     # Pre-warm judge cache for freeform mode
-    if config.get("question_mode") == "freeform":
+    if config.question_mode == "freeform":
         print("\nPre-warming judge cache (20 common questions × 76 objects)...")
         n_cached = await prewarm_judge_cache(objects)
         print(f"  Cached {n_cached} judge responses")
@@ -353,15 +360,10 @@ async def main():
     print("\n--- BASELINE EVAL (step 0, pre-training) ---")
     try:
         await run_evaluation(
-            run_name,
-            config["project"],
-            config["reward_fn"],
+            config,
+            eval_model_name=run_name,
             n_episodes=20,
             save_trajectories=f"{traj_dir}/eval",
-            prompt_version=config["prompt_version"],
-            question_mode=config.get("question_mode", "predefined"),
-            perturbation_type=perturbation_type,
-            perturbation_rate=perturbation_rate,
         )
     except Exception as e:
         print(f"Baseline evaluation failed: {e}")
@@ -381,18 +383,9 @@ async def main():
                 art.TrajectoryGroup(
                     rollout(
                         model,
-                        Scenario20Q(
-                            step=i,
-                            secret_id=sid,
-                            reward_fn=config["reward_fn"],
-                            prompt_version=config["prompt_version"],
-                            use_oracle=False,
-                            question_mode=config.get("question_mode", "predefined"),
-                            perturbation_type=perturbation_type,
-                            perturbation_rate=perturbation_rate,
-                        )
+                        Scenario20Q.from_config(config, step=i, secret_id=sid),
                     )
-                    for _ in range(10)
+                    for _ in range(config.group_size)
                 )
                 for sid in step_secrets
             ),
@@ -419,15 +412,10 @@ async def main():
         if args.eval_every > 0 and (i + 1) % args.eval_every == 0:
             try:
                 await run_evaluation(
-                    run_name,
-                    config["project"],
-                    config["reward_fn"],
+                    config,
+                    eval_model_name=run_name,
                     n_episodes=20,
                     save_trajectories=f"{traj_dir}/eval",
-                    prompt_version=config["prompt_version"],
-                    question_mode=config.get("question_mode", "predefined"),
-                    perturbation_type=perturbation_type,
-                    perturbation_rate=perturbation_rate,
                 )
             except Exception as e:
                 print(f"Evaluation failed: {e}")
@@ -443,15 +431,10 @@ async def main():
     print("\nRunning final evaluation...")
     try:
         await run_evaluation(
-            run_name,
-            config["project"],
-            config["reward_fn"],
+            config,
+            eval_model_name=run_name,
             n_episodes=50,
             save_trajectories=f"{traj_dir}/final_eval",
-            prompt_version=config["prompt_version"],
-            question_mode=config.get("question_mode", "predefined"),
-            perturbation_type=perturbation_type,
-            perturbation_rate=perturbation_rate,
         )
     except Exception as e:
         print(f"Final evaluation failed: {e}")

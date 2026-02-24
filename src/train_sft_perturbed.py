@@ -100,20 +100,23 @@ async def run_sft_perturbed(perturbation_type: str, data_path: str = None,
     # Post-SFT evaluation on perturbed episodes
     print(f"\n=== Post-SFT Evaluation (20 episodes, {perturbation_type}) ===")
     from train import run_evaluation
+    from configs import ExperimentConfig
 
     perturbation_rate = 0.15 if perturbation_type == "attribute_removal" else 0.0
     traj_dir = f"trajectories/{model_name}"
     os.makedirs(traj_dir, exist_ok=True)
 
-    results = await run_evaluation(
-        model_name=model_name,
+    eval_config = ExperimentConfig(
+        name=model_name,
         project=PROJECT,
-        reward_fn="v5",
-        n_episodes=20,
-        save_trajectories=f"{traj_dir}/post_sft_eval",
-        prompt_version="v4",
         perturbation_type=perturbation_type,
         perturbation_rate=perturbation_rate,
+    )
+    results = await run_evaluation(
+        eval_config,
+        eval_model_name=model_name,
+        n_episodes=20,
+        save_trajectories=f"{traj_dir}/post_sft_eval",
     )
 
     accuracy = results["correct"] / 20 if results else 0

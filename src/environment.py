@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 import art
 from rewards import compute_reward
 from prompts import get_system_prompt
+from configs import ExperimentConfig
 
 from openai.types.chat import (
     ChatCompletionMessage,
@@ -437,6 +438,20 @@ class Scenario20Q(BaseModel):
     question_mode: str = "predefined"
     perturbation_type: str = "none"
     perturbation_rate: float = 0.0
+
+    @classmethod
+    def from_config(cls, config: ExperimentConfig, step: int, secret_id: str,
+                    use_oracle: bool = False) -> "Scenario20Q":
+        return cls(
+            step=step,
+            secret_id=secret_id,
+            reward_fn=config.reward_fn,
+            prompt_version=config.prompt_version,
+            use_oracle=use_oracle,
+            question_mode=config.question_mode,
+            perturbation_type=config.perturbation_type,
+            perturbation_rate=config.perturbation_rate,
+        )
 
 @art.retry(exceptions=(requests.ReadTimeout, openai.InternalServerError, openai.APIError, openai.APIConnectionError))
 async def rollout(model: art.Model, scenario: Scenario20Q) -> art.Trajectory:

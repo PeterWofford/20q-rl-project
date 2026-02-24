@@ -79,14 +79,14 @@ async def run_sft():
     print("\n=== Post-SFT Evaluation (20 episodes) ===")
     from environment import rollout, Scenario20Q, objects
     from train import run_evaluation
+    from configs import ExperimentConfig
 
+    eval_config = ExperimentConfig(name=MODEL_NAME, project=PROJECT)
     results = await run_evaluation(
-        model_name=MODEL_NAME,
-        project=PROJECT,
-        reward_fn="v5",
+        eval_config,
+        eval_model_name=MODEL_NAME,
         n_episodes=20,
         save_trajectories="trajectories/run2-sft/post_sft_eval",
-        prompt_version="v4",
     )
 
     accuracy = results["correct"] / 20 if results else 0
