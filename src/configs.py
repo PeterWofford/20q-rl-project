@@ -119,6 +119,31 @@ AGENT_RUN4C_CONFIG = ExperimentConfig(
     perturbation_rate=0.15,
 )
 
+AGENT_RUN5A_CONFIG = ExperimentConfig(
+    name="run2-sft-v2",                # continue from SFT checkpoint
+    project="art-20q-runner-2026",
+    ppo=True,                          # PPO mode: clips to [0.8, 1.2]
+)
+
+AGENT_RUN5B_CONFIG = ExperimentConfig(
+    name="run2-sft-v2",
+    project="art-20q-runner-2026",
+    epsilon=0.3,                       # tight GRPO clips: [0.7, 2.0]
+    epsilon_high=1.0,
+)
+
+AGENT_RUN5C_CONFIG = ExperimentConfig(
+    name="run2-sft-v2",
+    project="art-20q-runner-2026",
+    scale_rewards=False,               # no reward normalization (raw advantages)
+)
+
+AGENT_RUN5D_CONFIG = ExperimentConfig(
+    name="run2-sft-v2",
+    project="art-20q-runner-2026",
+    beta=0.05,                         # KL penalty from SFT reference
+)
+
 CONFIGS: dict[str, ExperimentConfig] = {
     "001": AGENT_001_CONFIG,
     "002": AGENT_002_CONFIG,
@@ -133,6 +158,10 @@ CONFIGS: dict[str, ExperimentConfig] = {
     "run4a": AGENT_RUN4A_CONFIG,
     "run4b": AGENT_RUN4B_CONFIG,
     "run4c": AGENT_RUN4C_CONFIG,
+    "run5a": AGENT_RUN5A_CONFIG,
+    "run5b": AGENT_RUN5B_CONFIG,
+    "run5c": AGENT_RUN5C_CONFIG,
+    "run5d": AGENT_RUN5D_CONFIG,
 }
 
 

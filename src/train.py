@@ -253,7 +253,7 @@ async def run_evaluation(config: ExperimentConfig, eval_model_name: str,
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2", "run3", "run4a", "run4b", "run4c"])
+    parser.add_argument("--agent", default="005-v2", choices=["001", "002", "002-v2", "002-v3", "004", "005", "005-v2", "006", "run2", "run3", "run4a", "run4b", "run4c", "run5a", "run5b", "run5c", "run5d"])
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=6)
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
