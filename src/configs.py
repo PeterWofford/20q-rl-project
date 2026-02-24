@@ -63,7 +63,7 @@ AGENT_006_CONFIG = {
 }
 
 AGENT_RUN2_CONFIG = {
-    "name": "run2-sft",          # Same name as SFT model so GRPO continues from SFT checkpoint
+    "name": "run2-sft-v2",       # Same name as SFT model so GRPO continues from SFT checkpoint
     "project": "20q",
     "reward_fn": "v5",
     "prompt_version": "v4",

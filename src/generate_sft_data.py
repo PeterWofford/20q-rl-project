@@ -96,8 +96,32 @@ def generate_oracle_trajectory(secret_id: str) -> list[dict]:
         message_obj = ChatCompletionMessage(role="assistant", tool_calls=[tool_call])
         choice = Choice(finish_reason="tool_calls", index=0, message=message_obj, logprobs=None)
 
-        # If this is submit_guess, append assistant turn and STOP (don't add tool response)
+        # Before submit_guess, inject a get_top_candidates call so the model
+        # sees the actual candidate IDs (the oracle has direct access to the
+        # candidate list, but the LLM needs to see IDs via tool output).
         if tool_name == "submit_guess":
+            # Build get_top_candidates assistant turn
+            k = len(ep["candidates"])
+            gtc_args = json.dumps({"k": k})
+            gtc_function = Function(name="get_top_candidates", arguments=gtc_args)
+            gtc_tool_call = ChatCompletionMessageToolCall(
+                id="call_" + _rand_id(), function=gtc_function, type="function",
+            )
+            gtc_message = ChatCompletionMessage(role="assistant", tool_calls=[gtc_tool_call])
+            gtc_choice = Choice(finish_reason="tool_calls", index=0, message=gtc_message, logprobs=None)
+            messages.append(choice_to_dict(gtc_choice))
+
+            # Tool response with actual candidate IDs
+            ids = ep["candidates"][:k]
+            gtc_result = {"candidates": [(oid, objects_by_id[oid]["name"]) for oid in ids]}
+            messages.append({
+                "role": "tool",
+                "tool_call_id": gtc_tool_call.id,
+                "content": json.dumps(gtc_result),
+            })
+
+            # Now add the state update and submit_guess
+            messages.append({"role": "user", "content": render_state(ep, objects_by_id)})
             messages.append(choice_to_dict(choice))
             break
 
