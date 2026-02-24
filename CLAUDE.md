@@ -64,7 +64,7 @@ These are not just bugs. They're findings about RL fragility. The silent failure
 - **RL Library:** ART (Agent Reasoning & Training) — OpenPipe's framework
 - **RL Algorithm:** GRPO
 - **Compute:** ART ServerlessBackend (pay-per-use, no always-on GPUs)
-- **Observability:** W&B (Weights & Biases)
+- **Observability:** W&B. All runs MUST be logged to the project `art-20q-runner-2026`.
 - **Repo:** https://github.com/PeterWofford/20q-rl-project
 
 ## ENVIRONMENT

@@ -268,6 +268,16 @@ async def main():
     os.environ["WANDB_RUN_ID"] = run_name
     os.environ["WANDB_RESUME"] = "allow"
 
+    # Initialize W&B — all runs log to the canonical project
+    wandb.init(project="art-20q-runner-2026", name=run_name, config={
+        "agent": args.agent,
+        "seed": args.seed,
+        "steps": args.steps,
+        "batch_size": args.batch_size,
+        "reward_fn": config["reward_fn"],
+        "prompt_version": config["prompt_version"],
+    })
+
     # Initialize Weave (DISABLED to save costs)
     # weave.init(
     #     config["project"],

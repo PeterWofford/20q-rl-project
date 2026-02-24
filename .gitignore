@@ -7,3 +7,5 @@ __pycache__/
 wandb/
 .art/
 .ipynb_checkpoints/
+trajectories/
+*.jsonl
