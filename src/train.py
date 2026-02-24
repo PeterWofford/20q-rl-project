@@ -250,10 +250,25 @@ async def main():
     parser.add_argument("--eval-every", type=int, default=25, help="Run eval every N steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--run-label", type=str, default=None, help="Label for grouping runs (e.g. 'run1')")
+    parser.add_argument("--num-objects", type=int, default=None, help="Subset to N objects (default: all 76). Use fewer for faster smoke tests in freeform mode.")
     args = parser.parse_args()
 
     # Set seed early
     random.seed(args.seed)
+
+    # Subset objects for faster smoke tests (especially freeform mode).
+    # Mutate the module-level globals in-place so rollout() sees the change.
+    if args.num_objects and args.num_objects < len(objects):
+        import environment
+        full_count = len(objects)
+        subset = random.sample(objects, args.num_objects)
+        subset_by_id = {obj["id"]: obj for obj in subset}
+        # Mutate in-place: environment.py module globals
+        environment.objects[:] = subset
+        environment.objects_by_id.clear()
+        environment.objects_by_id.update(subset_by_id)
+        # Also update train.py's local references (they point to the same list/dict)
+        print(f"Subsetting to {args.num_objects} objects (from {full_count})")
 
     config = get_agent_config(args.agent)
 
@@ -276,6 +291,7 @@ async def main():
         "batch_size": args.batch_size,
         "reward_fn": config["reward_fn"],
         "prompt_version": config["prompt_version"],
+        "num_objects": len(objects),
     })
 
     # Initialize Weave (DISABLED to save costs)
