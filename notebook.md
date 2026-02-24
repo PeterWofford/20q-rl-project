@@ -1005,3 +1005,108 @@ Training trajectory (sampled steps):
 4. GRPO can briefly teach resilience (~5-10 steps) but collapses with extended training (Run 4)
 
 Consider: Would a modified reward function (e.g., entropy bonus, KL penalty from SFT reference) prevent collapse? That's a natural follow-up but may be out of scope/budget.
+
+---
+
+## Final Conclusions
+
+### The Thesis
+
+> "GRPO reliably acquires behavioral patterns but cannot acquire novel algorithmic reasoning from reward signal alone. RL refines execution — it doesn't teach reasoning."
+
+After four experiment families (10+ individual runs) on a controlled testbed where the optimal strategy is known, we can refine this thesis into three sharper claims with empirical support for each.
+
+### Claim 1: Strategy comes from pretraining or SFT, never from GRPO
+
+| Evidence | Run | Result |
+|----------|-----|--------|
+| GRPO from scratch → policy collapse | Run 1 | 30% → 65% (step 10) → 0% (step 20). Agent briefly improved then collapsed to doing nothing. |
+| SFT on 76 oracle trajectories → near-optimal play | Run 2 | 95% accuracy, 7.7 avg questions (oracle: 6.6). Single SFT pass achieved what 50 GRPO steps couldn't. |
+| Base model already asks near-optimal freeform questions | Run 3 | Qwen-14B narrows 20 candidates to ~1 in ~6 questions out of the box. Candidate reduction per question was flat across GRPO training. |
+
+GRPO never taught the agent *which* questions to ask or *how* to narrow candidates. In Run 1, it briefly reinforced the base model's existing questioning behavior before reward hacking destroyed it. In Run 3, the base model was already competent and GRPO had nothing to add. In Run 2, SFT trivially imprinted the strategy that GRPO couldn't discover.
+
+The core issue is that optimal 20Q play is a dynamic programming problem — the right question depends on the full state of remaining candidates. GRPO provides trajectory-level reward, not per-step supervision. It can learn "asking questions is good" but not "this specific attribute maximally bisects 43 remaining candidates."
+
+### Claim 2: GRPO can teach behavioral resilience — but only briefly
+
+| Perturbation | Baseline | Post-GRPO (5 steps) | Post-GRPO (50 steps) |
+|---|---|---|---|
+| 4a: Answer corruption (invisible) | 55% (76 obj) | — (degraded in smoke test) | — |
+| 4b: Forced bad start (observable) | 55% (76 obj) | ~98% peak (step 10) | **26%** (collapsed) |
+| 4c: Attribute removal (observable) | 60% (76 obj) | ~80% peak (step 10) | **0%** (collapsed) |
+
+GRPO taught genuine behavioral adaptations in the first ~5-10 steps:
+- **Attribute pivoting** (4c): When `is_food` returns "unknown," try `is_edible` instead. A local, reactive behavior learned from clear cause-and-effect within a single turn.
+- **Always guess** (4b, 4c): Eliminating timeouts by submitting a guess even when uncertain. Simple behavioral rule with immediate reward signal.
+- **Strategic `get_top_candidates`** (4b, 4c): Calling the candidate lookup tool at decision points rather than guessing blind.
+
+These are exactly the kinds of patterns the thesis predicts GRPO can learn: local, reactive, behavioral. They don't require understanding the decision tree or reasoning about information theory — just responding to observable signals.
+
+But extended training (50 steps) destroyed all of it. Both runs collapsed to the same degenerate attractors as Run 1: suicide guessing (4b) or complete inaction (4c). The SFT starting point delayed collapse by ~15-25 steps but didn't prevent it.
+
+### Claim 3: GRPO cannot teach error recovery that requires reasoning
+
+Run 4a (answer corruption) is the clearest negative result. At 15% corruption rate:
+- Accuracy dropped from ~95% to ~10% from corruption alone (before any GRPO)
+- GRPO made it worse (10% → 5%), reinforcing fixed sequences rather than encouraging adaptation
+- Error detection score: 0/20 at both baseline and post-GRPO
+
+Detecting answer corruption requires cross-referencing world knowledge against tool outputs ("I asked `is_animal` and got `yes`, but `Desk` is still in candidates — that's inconsistent"). This is algorithmic reasoning, not behavioral adaptation. GRPO provided no learning signal because the corruption is invisible — the environment state is self-consistent after the flip — and the ~5% correct rate during training gives near-zero positive examples to amplify.
+
+This draws a clean boundary: GRPO can learn from **observable** perturbations with **local** recovery actions, but not from **invisible** perturbations requiring **global** reasoning.
+
+### The Refined Thesis
+
+> **GRPO is a brief refinement layer, not a training method.** It can polish SFT-learned behavior within a narrow window (~5-10 steps), teaching local behavioral adaptations like error pivoting and always-guess heuristics. It cannot teach strategy, cannot teach reasoning, and extended application destroys the very behaviors it initially improves. The practical recipe is: pretraining for reasoning capacity, SFT for strategy, and a carefully early-stopped GRPO pass for robustness.
+
+### The Collapse Problem
+
+The most consistent finding across all runs is that GRPO eventually collapses. Every run that exceeded ~15 steps exhibited one of two failure modes:
+
+1. **Suicide guessing:** Agent learns that guessing immediately (even wrong) avoids the accumulated cost of asking questions. Questions drop to 0-3, candidates remaining jumps to 10-70.
+2. **Timeout/inaction:** Agent learns that doing nothing is safer than trying. Questions → 0, guesses → 0, reward → 0.
+
+These are degenerate attractors in the reward landscape. The SFT checkpoint provides a better starting point (the agent starts near optimal play, not random behavior), but the attractors are still there. Given enough GRPO steps, the optimizer finds them.
+
+This isn't unique to 20Q. Any RL setting with (a) a costly action sequence (asking questions), (b) sparse terminal reward (correct/wrong at end), and (c) a zero-cost default (do nothing) will have these attractors. The GRPO-specific issue is that trajectory-level reward provides no per-step credit assignment, so the optimizer can't distinguish "this question was useful" from "this question was wasteful."
+
+### Methodological Lessons
+
+1. **Environment design matters more than algorithm choice.** The `submit_guess` ID formatting confound initially inflated GRPO's apparent effect by 50-65pp. A cleaner environment (accepting object names) revealed the true, smaller resilience delta. Always verify environment semantics before attributing results to the RL algorithm.
+
+2. **LLM-as-judge introduces a consistency tax.** Run 3 showed that judge inconsistency across objects compounds multiplicatively across sequential questions. 5% per-call error × 6 questions × 20 objects ≈ 75% game-level error. Deterministic environments are essential for isolating RL capabilities.
+
+3. **Smoke tests before full runs.** The 5-step smoke tests captured the sweet spot and revealed the format confound. The 50-step full runs confirmed collapse. Running full experiments first would have cost 5× more and still needed smoke tests to diagnose the collapse. Always start small.
+
+4. **Silent failures are the default.** Run 2a's SFT model got 0% accuracy despite learning perfect question strategy — because it hallucinated object IDs. The expert iteration attempt (injecting oracle trajectories) showed 100% accuracy in logs but zero gradient updates. Metrics that look good require verification against actual behavior.
+
+### Cost Summary
+
+| Run | Description | Cost |
+|-----|-------------|------|
+| Run 1 | GRPO from scratch, 50 steps | ~$15 |
+| Run 2 | SFT + GRPO smoke tests | ~$12 |
+| Run 3 | Freeform questions (with LLM judge) | ~$8 |
+| Run 4a | Answer corruption smoke test | ~$1.50 |
+| Run 4b | Forced bad start (smoke + full) | ~$14 |
+| Run 4c | Attribute removal (smoke + full) | ~$14 |
+| **Total** | | **~$65** |
+
+Under the $150 budget cap, with ~$85 remaining.
+
+### What We Didn't Test
+
+These are natural follow-ups that remain open:
+
+1. **KL penalty from SFT reference.** Standard PPO/RLHF uses a KL divergence penalty to keep the RL policy close to the reference (SFT) model. This directly addresses the collapse problem by preventing the optimizer from wandering too far from the SFT-learned behavior. ART's GRPO implementation may not support this natively.
+
+2. **Entropy bonus.** Adding an entropy term to the reward encourages exploration and prevents the policy from collapsing to deterministic degenerate strategies. This is a simpler intervention than KL penalty and could extend the training window.
+
+3. **Curriculum training.** Start with clean episodes, gradually introduce perturbations. This gives the model a stable reward signal early and introduces noise only after the base strategy is reinforced.
+
+4. **Per-step reward shaping.** Reward each question based on candidate reduction (not just final accuracy). This provides denser signal and better credit assignment, potentially preventing the "questions are costly" attractor.
+
+5. **Larger model.** Qwen-14B may lack the capacity for the reasoning required to detect answer corruption (4a) or replan globally (4c structural failures). A 70B+ model might show different failure boundaries.
+
+Each of these could extend the training window or prevent collapse entirely. But the current results already establish the boundary we set out to find: what GRPO can and can't learn from reward signal alone.
