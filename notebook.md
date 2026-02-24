@@ -257,6 +257,95 @@ This is a new class of failure mode not seen in Runs 1-2: the environment itself
 - If GRPO fails (collapse or no improvement) → strong evidence that open-ended action spaces require SFT demonstration, supporting the thesis that "RL refines execution, it doesn't teach reasoning."
 - If base model is already decent at step 0 → pretraining knowledge matters more than RL, same as Run 1's step-0 showing.
 
-**Results:** *pending — smoke test in progress*
+**Results (smoke test: `run3-smoke-v3-seed1`, 20 objects, 5 steps):**
 
-**Next:** If smoke test completes in reasonable time, launch full 50-step run. If GRPO fails in freeform mode, Run 3c adds SFT warm-start on hand-crafted freeform trajectories. If it succeeds, explore curriculum (fewer objects first) or model size ablations.
+| Metric | Step 0 (baseline) | Step 5 (mid eval) | Final eval (50 eps) |
+|--------|-------------------|-------------------|---------------------|
+| Accuracy | 25.0% (5/20) | 25.0% (5/20) | 20.0% (4/20) |
+| Wrong guesses | 15 | 15 | 16 |
+| Timeouts | 0 | 0 | 0 |
+| Avg questions | 6.5 | 6.0 | 5.6 |
+| Avg candidates remaining | 1.0 | 1.0 | 1.1 |
+
+All 5 training steps completed (100% success rate, 0 failures). Infrastructure fixes worked — the run finished end-to-end with 20 objects.
+
+**Observations:**
+
+1. **No collapse.** Unlike Run 1 (which collapsed to inaction by step 15), the freeform agent keeps asking questions and guessing through all 5 steps. Zero timeouts. The v5 reward function's timeout penalty (-5) vs wrong guess penalty (-15) doesn't create the safe-haven attractor here — possibly because the freeform prompt (v6) starts with "ask questions" rather than "call list_attributes()", giving the base model a more natural entry point.
+
+2. **Questions are discriminating.** The agent asks ~6 questions and narrows from 20 candidates to ~1. This is near-optimal for 20 objects (log2(20) ≈ 4.3). The base Qwen-14B model already knows how to ask good binary-search-style questions ("Is it alive?", "Is it man-made?") from pretraining. This mirrors Run 1's finding: skill 1-2 (tool use, sequencing) come from pretraining, not RL.
+
+3. **Accuracy is only 20-25% despite narrowing to 1 candidate.** This is the critical anomaly. If the agent narrows from 20 to 1 candidate and guesses that candidate, accuracy should be near 100%. The fact that it's 25% means the judge is introducing systematic noise during candidate filtering, eliminating the secret object in ~75% of games despite the safety net.
+
+4. **No GRPO signal.** Accuracy flat at 25% across 5 steps. Too few steps to be conclusive, but the reward distribution during training showed mostly negative rewards (wrong guesses), meaning the GRPO advantage computation has limited positive signal to amplify.
+
+**The LLM judge problem — a deeper look:**
+
+The core issue is how freeform questions get evaluated. Here's the exact flow:
+
+When the agent calls `ask_question("Is it alive?")`, the environment does the following:
+
+```python
+# Step 1: Evaluate the question against the SECRET object
+secret = objects_by_id[ep["secret_id"]]
+secret_answer = await evaluate_question(
+    ep["secret_id"], secret["name"], secret["attrs"], question
+)
+# e.g., secret is "Dog", judge returns "yes"
+
+# Step 2: Evaluate the SAME question against ALL remaining candidates
+results = await asyncio.gather(
+    *(evaluate_question(oid, obj["name"], obj["attrs"], question)
+      for oid in ep["candidates"])
+)
+
+# Step 3: Keep only candidates whose answer MATCHES the secret's answer
+ep["candidates"] = [oid for oid, answer in results if answer == secret_answer]
+# e.g., keep all objects where judge also said "yes" to "Is it alive?"
+```
+
+Each `evaluate_question` call sends this prompt to gpt-5-nano:
+
+```
+You are a yes/no question judge for a 20 Questions game.
+
+Object: {object_name}
+Attributes (true means the object has this property):
+  is_animal: True
+  is_large: True
+  has_legs: True
+  ...
+
+Player's question: "Is it alive?"
+
+Based on the object's attributes and your general knowledge about
+"{object_name}", answer: yes, no, or unknown.
+```
+
+The problem is **judge inconsistency across objects**. For a question like "Is it bigger than a car?", gpt-5-nano might:
+- Say "yes" for "Elephant" (correct)
+- Say "yes" for "Dog" (wrong — dogs are smaller than cars)
+- Say "no" for "Whale" (wrong — whales are bigger than cars)
+
+If the secret is "Elephant" and the judge says "yes", then any candidate where the judge incorrectly said "no" gets eliminated — even if it should have been kept. Conversely, candidates that should be eliminated might survive if the judge incorrectly agrees.
+
+The safety net catches one case — if the secret itself gets filtered out:
+
+```python
+# Safety: ensure the secret is always in candidates
+if ep["secret_id"] not in ep["candidates"]:
+    ep["candidates"].append(ep["secret_id"])
+```
+
+But it can't catch the general case where noise in candidate filtering leads to the wrong final candidate. After 6 questions, each with independent judge noise across 20 objects, the cumulative error is enough to make the surviving candidate wrong ~75% of the time.
+
+This is a **fundamental limitation of the LLM-judge approach**: the judge must be consistent across all 76 (or 20) objects for the same question. A small per-object error rate compounds multiplicatively across questions. With 6 questions and 20 objects, even a 5% per-call error rate means ~50% of games have at least one filtering error.
+
+**Comparison to predefined mode:** In predefined mode, `ask_yesno("is_animal")` does a deterministic boolean lookup — zero noise, zero cost, instant. The freeform mode pays a massive tax in cost, latency, AND accuracy for the privilege of open-ended questions.
+
+**Implication for the thesis:** The judge noise means we can't cleanly separate "GRPO failing to learn strategy" from "GRPO succeeding at strategy but being undermined by a noisy environment." The 25% accuracy ceiling may be an environment problem, not an RL problem. To isolate the RL question, we'd need either (a) a perfect judge, or (b) a way to measure question quality independently of final accuracy.
+
+**Next:**
+- Option A: Launch full 50-step run with 20 objects to see if GRPO can improve even within the noisy ceiling. If accuracy moves from 25% → 40%, that's signal even if the ceiling is low.
+- Option B: Improve the judge first. Options: use a stronger model (gpt-5-mini), add self-consistency (majority vote of 3 judge calls), or pre-compute a ground-truth answer matrix for common questions.
+- Option C: Measure question quality directly — track average candidate reduction per question across training steps. If GRPO learns to ask better questions, candidate reduction should improve even if final accuracy doesn't (due to judge noise).
