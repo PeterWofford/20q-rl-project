@@ -176,8 +176,14 @@ def ask_yesno(ep: TwentyQuestionsEpisode, objects_by_id: dict[str, Obj], attribu
 
 def submit_guess(ep: TwentyQuestionsEpisode, object_id: str) -> bool:
     ep["done"] = True
+    # Accept object names (case-insensitive) in addition to IDs
+    if object_id != ep["secret_id"]:
+        name_to_id = {obj["name"].lower(): obj["id"] for obj in objects}
+        resolved = name_to_id.get(object_id.strip().lower(), object_id)
+        ep["guessed_id"] = resolved
+        return resolved == ep["secret_id"]
     ep["guessed_id"] = object_id
-    return object_id == ep["secret_id"]
+    return True
 
 
 # --- FREEFORM QUESTION JUDGE ---

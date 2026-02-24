@@ -373,31 +373,48 @@ This is a **fundamental limitation of the LLM-judge approach**: the judge must b
 
 **Results (smoke test: `run3-smoke-v4-seed1`, 76 objects, 5 steps):**
 
-| Metric | Step 0 (baseline) | Step 1 | Step 2 | Step 3 | Step 4 | Step 5 |
-|--------|-------------------|--------|--------|--------|--------|--------|
-| Accuracy | 30.0% (6/20) | — | — | — | — | TBD |
-| Avg questions | 9.7 | 9.5 | 9.4 | 9.2 | 10.1 | TBD |
-| Avg final candidates | 5.9 | 3.5 | 9.5 | 5.8 | 5.1 | TBD |
-| Avg reward | — | -10.8 | -0.6 | -1.9 | -4.0 | TBD |
-| Correct rate (train) | — | 0.15 | 0.42 | 0.37 | 0.33 | TBD |
+| Metric | Step 0 (baseline) | Step 5 (final eval) |
+|--------|-------------------|---------------------|
+| Accuracy | 30.0% (6/20) | 40.0% (8/20) |
+| Wrong guesses | 13 | 12 |
+| Timeouts | 1 | 0 |
+| Avg questions | 9.7 | 10.2 |
+| Avg candidates remaining | 5.9 | 2.9 |
 
-_Step 5 in progress (82% gathered). Mid-training and final eval TBD._
+Training metrics across 5 steps:
 
-**Preliminary observations:**
+| Metric | Step 1 | Step 2 | Step 3 | Step 4 | Step 5 |
+|--------|--------|--------|--------|--------|--------|
+| Avg reward | -10.8 | -0.6 | -1.9 | -4.0 | +7.2 |
+| Correct rate | 0.15 | 0.42 | 0.37 | 0.33 | 0.60 |
+| Avg questions | 9.5 | 9.4 | 9.2 | 10.1 | 8.7 |
+| Avg final candidates | 3.5 | 9.5 | 5.8 | 5.1 | 6.3 |
 
-1. **Baseline accuracy 30% on 76 objects** (vs 25% on 20 objects in Run 3b). Surprisingly not worse at full scale — the base model handles 76 objects as well as 20.
+**Observations:**
 
-2. **Higher avg candidates remaining (5.9 vs 1.0 in Run 3b).** With 76 objects, the agent needs more questions to narrow down, and judge noise has more room to compound. 5.9 remaining after ~10 questions means the agent is still narrowing significantly (76→6 is ~3.7 halvings) but not reaching the single-candidate precision seen with 20 objects.
+1. **Accuracy improved 30% → 40% over 5 steps.** The improvement is modest but notable — with only 5 GRPO steps and a noisy judge environment, the model improved. However, variance is high (step 5 training correct rate spiked to 0.60 while earlier steps fluctuated 0.15-0.42), so this could be noise rather than genuine learning.
 
-3. **Training metrics show high variance.** Reward swings from -10.8 (step 1) to -0.6 (step 2) to -4.0 (step 4). Correct rate fluctuates 0.15-0.42. This noise is consistent with judge inconsistency dominating the reward signal.
+2. **Baseline accuracy 30% on 76 objects** (vs 25% on 20 objects in Run 3b). Surprisingly not worse at full scale — the base model handles 76 objects as well as 20.
 
-4. **No clear GRPO learning trend yet.** Questions asked stays ~9-10, candidate reduction shows no monotonic improvement. Need final eval to compare step-0 vs step-5 properly.
+3. **Higher avg candidates remaining (5.9 → 2.9 from step 0 to step 5).** The model improved at narrowing, which is a genuine skill improvement. With 76 objects, 2.9 remaining after ~10 questions means ~4.7 halvings. The model still can't consistently narrow to 1 candidate (vs 1.0 in Run 3b with 20 objects), confirming judge noise compounds worse at scale.
 
-**Skill acquisition:** TBD (pending final eval trajectories)
+4. **Training metrics show high variance.** Reward swings from -10.8 (step 1) to +7.2 (step 5). Correct rate fluctuates 0.15-0.60. This noise is consistent with judge inconsistency dominating the reward signal — but the upward trend in step 5 suggests some learning may be occurring.
 
-**Interpretation:** TBD (pending completion)
+5. **Zero timeouts at step 5** (down from 1 at step 0). The model maintained or slightly improved its completion behavior.
 
-**Cost:** TBD
+**Interpretation:**
+
+Run 3c confirms and extends the Run 3b findings:
+
+1. **The base model already asks good freeform questions from pretraining.** 30% accuracy on 76 objects without any training is comparable to gpt-4o-mini's 40% with predefined attributes. The questions are near-optimal binary search from pretraining.
+
+2. **GRPO may have marginal value even with a noisy judge.** 30% → 40% in 5 steps could indicate GRPO is helping the model ask questions the judge evaluates more consistently (optimizing for judge compatibility rather than information-theoretic optimality). This is an interesting finding: GRPO may teach "ask questions this environment can evaluate reliably" rather than "ask maximally informative questions."
+
+3. **Judge noise remains the dominant accuracy limiter.** 2.9 avg candidates remaining should yield ~35% accuracy if the agent picks randomly from remaining candidates (1/2.9 = 34%). The actual 40% accuracy is close to this theoretical maximum, confirming that the bottleneck is candidate filtering quality, not question strategy.
+
+4. **Flat candidate reduction per question across steps** (the key metric from the thesis) would need a longer run to confirm. 5 steps is suggestive but not conclusive.
+
+**Cost:** ~$8 (5 GRPO steps with LLM judge, 76 objects, higher API cost than predefined mode)
 
 ---
 
@@ -553,3 +570,235 @@ The 95% → 10% accuracy drop from corruption alone (before any GRPO) shows how 
 **Cost:** ~$1.50 (5 GRPO steps + 2 evals)
 
 **Next:** Proceed to 4b (forced bad start) and 4c (attribute removal) smoke tests. These test behavioral adaptation rather than reasoning — the perturbations are visible to the agent, which our thesis predicts GRPO can learn from.
+
+---
+
+## Run 4b — Forced Bad Start Smoke Test — 2026-02-24
+
+**Hypothesis:** The SFT-trained model has memorized a fixed question sequence (optimal binary search). When 2-3 random (non-optimal) questions are pre-asked before the agent takes over, the agent inherits a partially-narrowed candidate set that doesn't match its memorized sequence. GRPO should be able to teach the model to adapt to unfamiliar states — reading `get_top_candidates` output and choosing attributes based on the actual remaining candidates rather than following the memorized path.
+
+**Setup:**
+- Model: `run2-sft-v2` checkpoint (SFT-trained, ~95% clean accuracy)
+- RL: GRPO via ART ServerlessBackend
+- Reward: v5
+- Prompt: v4
+- Perturbation: forced_bad_start (2-3 random questions pre-asked per episode)
+- Steps: 5 (smoke test), seed 42
+- 20 objects (subset)
+- W&B run: `run4b-smoke-seed42`
+
+**Results:**
+
+| Metric | Step 0 (SFT baseline) | Step 5 (SFT+GRPO) |
+|--------|----------------------|-------------------|
+| Accuracy | 15% (3/20) | **80% (16/20)** |
+| Wrong guesses | 15 | 4 |
+| Timeouts | 2 | 0 |
+| Avg questions | 8.6 | 8.4 |
+| Avg candidates remaining | 1.3 | 1.1 |
+| Avg forced questions | — | 2.47 |
+
+Training progression:
+
+| Metric | Step 1 | Step 2 | Step 3 | Step 4 | Step 5 |
+|--------|--------|--------|--------|--------|--------|
+| Avg reward | -8.4 | -9.3 | -8.2 | -7.1 | -7.0 |
+| Correct rate | 0.12 | 0.10 | 0.13 | 0.17 | 0.15 |
+| Avg questions | 7.6 | 8.7 | 8.2 | 8.9 | 8.3 |
+
+**Observations:**
+
+1. **15% → 80% in 5 GRPO steps** (reported accuracy based on environment scoring).
+
+2. **Zero timeouts at step 5** (vs 2 at step 0). The model no longer gets stuck when its memorized sequence is disrupted.
+
+3. **Training correct rate was low throughout (~10-17%).** Yet the final eval jumped to 80%. This suggests GRPO was learning behavioral flexibility that generalized better to eval than the noisy training metrics showed.
+
+4. **Reward stayed negative throughout training** (-8.4 to -7.0). Gradual improvement but no step showed strongly positive reward. The model learned from a weak signal.
+
+**Trajectory analysis — critical confound discovered:**
+
+Detailed trajectory inspection revealed that the 15% → 80% accuracy jump is **primarily an ID formatting fix, not a reasoning improvement.**
+
+Per-episode breakdown at baseline (step 0):
+- 3 correct (guessed by object ID)
+- **15 right-object-wrong-format** (narrowed to 1 candidate, guessed by name e.g. "Dog" instead of ID "d4t6u")
+- 2 no guess (genuine reasoning failures — timed out with 2-4 candidates remaining)
+
+Per-episode breakdown post-GRPO (step 5):
+- 16 correct (guessed by object ID)
+- **4 right-object-wrong-format** (still guessing by name)
+- 0 no guess
+
+**True reasoning accuracy (correct object identified regardless of format):**
+- Baseline: **90% (18/20)** — the SFT model's question strategy was barely degraded by forced bad starts
+- Post-GRPO: **100% (20/20)** — modest reasoning improvement, huge format improvement
+
+The environment's `submit_guess()` does strict string matching against opaque 5-character IDs (e.g. `t6d8e`). The agent can only discover these IDs by calling `get_top_candidates`. Under perturbation, the SFT model stopped calling `get_top_candidates` (its memorized sequence was disrupted), so it guessed by name instead. GRPO re-taught the `get_top_candidates` → `submit_guess` ritual.
+
+| Behavioral metric | Baseline | Post-GRPO |
+|---|---|---|
+| Episodes using `get_top_candidates` | ~4/20 (20%) | ~17/20 (85%) |
+| Episodes with 2+ `get_top_candidates` calls | 0/20 | ~6/20 (30%) |
+| Guesses by object ID (vs name) | 3/18 | 16/20 |
+
+**What GRPO actually taught (verified from trajectories):**
+
+1. **Re-learn the ID lookup ritual.** Call `get_top_candidates` before guessing so you see the object IDs. This is a behavioral sequence, not reasoning. It accounts for ~80% of the accuracy improvement.
+
+2. **State-conditioned question selection.** Post-GRPO, the agent checks `get_top_candidates` mid-game and picks attributes that discriminate among the actual remaining candidates. Example: seeing {Bicycle, Broom, Chess, Paper}, it asked `has_wheels` — the one attribute that uniquely identifies Bicycle in that set. This is genuine adaptation, but it's a refinement on top of already-correct narrowing.
+
+3. **Always submit a guess.** Baseline had 2 timeouts; post-GRPO had 0. The model learned that guessing (even uncertain) beats running out of questions.
+
+**Skill acquisition (revised based on trajectories):**
+
+| Skill | Step 0 | Step 5 |
+|-------|--------|--------|
+| 1. Tool use | 20/20 | 20/20 |
+| 2. Sequencing | 18/20 | 20/20 |
+| 3. State awareness (`get_top_candidates` usage) | 4/20 (20%) | 17/20 (85%) |
+| 4. History tracking | adequate (narrowing worked) | better (state-conditioned) |
+| 5. Error detection | N/A | N/A |
+| 6. Recovery from non-optimal state | 18/20 reasoning, 3/20 format | 20/20 reasoning, 16/20 format |
+
+**Interpretation:**
+
+The 4b result is less about resilience than initially appeared. The SFT model's binary search strategy is surprisingly robust to forced bad starts — it narrowed to 1 candidate in 15/18 guessing episodes even from non-optimal starting states. The strategy transferred; what broke was the downstream `get_top_candidates` → `submit_guess` ritual.
+
+This raises a design question: **`submit_guess` requiring opaque IDs is an environment design flaw.** If it accepted object names, baseline accuracy would be 90%, not 15%. The perturbation barely degraded reasoning — it degraded a formatting convention. GRPO's value here is real (re-learning the tool sequence) but smaller than the headline numbers suggest.
+
+The genuine resilience signal is the improvement from 90% → 100% true reasoning accuracy, the elimination of timeouts (2 → 0), and the state-conditioned question selection observed in post-GRPO trajectories. These are meaningful but modest improvements, not the dramatic 15% → 80% the raw numbers imply.
+
+**Cost:** ~$1.50 (5 GRPO steps + 2 evals)
+
+**Next:** Fix `submit_guess` to accept object names (case-insensitive) as valid guesses, then re-run baselines to measure the true resilience delta. Full 50-step runs pending this fix.
+
+---
+
+## Run 4c — Attribute Removal Smoke Test — 2026-02-24
+
+**Hypothesis:** When 15% of attributes are randomly disabled per episode (returning "unknown"), the SFT model's memorized question sequence will frequently hit blocked attributes. GRPO should teach the model to recover — skip "unknown" attributes, try alternatives, and still narrow to the correct guess. This tests behavioral adaptation similar to 4b but with a different perturbation mechanism.
+
+**Setup:**
+- Model: `run2-sft-v2` checkpoint (SFT-trained, ~95% clean accuracy)
+- RL: GRPO via ART ServerlessBackend
+- Reward: v5
+- Prompt: v4
+- Perturbation: attribute_removal at 15% rate (~9 of 59 attributes disabled per episode)
+- Steps: 5 (smoke test), seed 42
+- 20 objects (subset)
+- W&B run: `run4c-smoke-seed42`
+
+**Results:**
+
+| Metric | Step 0 (SFT baseline) | Step 5 (SFT+GRPO) |
+|--------|----------------------|-------------------|
+| Accuracy | 25% (5/20) | **85% (17/20)** |
+| Wrong guesses | 12 | 3 |
+| Timeouts | 3 | 0 |
+| Avg questions | 9.3 | 8.7 |
+| Avg candidates remaining | 1.7 | 1.5 |
+| Avg disabled attributes | 8 | 8 |
+
+Training progression:
+
+| Metric | Step 1 | Step 2 | Step 3 | Step 4 | Step 5 |
+|--------|--------|--------|--------|--------|--------|
+| Avg reward | -7.7 | -5.3 | -4.9 | -0.6 | +12.6 |
+| Correct rate | 0.17 | 0.23 | 0.25 | 0.37 | 0.75 |
+| Avg questions | 8.0 | 10.2 | 9.1 | 9.7 | 8.5 |
+| Disabled attrs | 8 | 8 | 8 | 8 | 8 |
+
+**Observations:**
+
+1. **25% → 85% in 5 GRPO steps** (reported accuracy based on environment scoring).
+
+2. **Clear monotonic improvement in training.** Correct rate 0.17 → 0.23 → 0.25 → 0.37 → 0.75, reward -7.7 → +12.6. Cleaner learning curve than 4b.
+
+3. **Zero timeouts at step 5** (vs 3 at step 0). The SFT model got stuck when its memorized attributes were unavailable. GRPO taught it to try alternatives.
+
+4. **Reward turned positive by step 5** (+12.6). The only perturbation type where training reward crossed positive.
+
+**Trajectory analysis — same ID formatting confound as 4b:**
+
+Per-episode breakdown at baseline (step 0):
+- 5 correct (guessed by object ID)
+- **12 right-object-wrong-format** (narrowed to 1 candidate, guessed by name)
+- 3 no guess (genuine reasoning failures — 1 catastrophic with 12 candidates remaining from retry loop, 2 with 2-3 candidates)
+
+Per-episode breakdown post-GRPO (step 5):
+- 17 correct (guessed by object ID)
+- **3 right-object-wrong-format**
+- 0 no guess
+
+**True reasoning accuracy (correct object identified regardless of format):**
+- Baseline: **85% (17/20)** — most of the "25% accuracy" was a format issue
+- Post-GRPO: **100% (20/20)**
+
+**Baseline failure patterns from trajectories:**
+
+1. **Catastrophic retry loops (3 episodes, 15%).** When key early attributes (`is_animal`, `is_furniture`) are disabled, the SFT model retries them compulsively. Worst case: Elephant episode alternated `is_animal` (unknown) → `is_furniture` (unknown) → `is_animal` (unknown) in an infinite loop for 12 consecutive questions, ending with 12 candidates remaining. Chess retried `is_animal` 7 times.
+
+2. **Attribute hallucination.** When the memorized sequence is exhausted, the model invents non-existent attributes (`has_trunk`, `is_domestic`, `has_long_ears`, `can_run`). These always return "unknown", wasting questions.
+
+3. **Silent format failure (12 episodes, 60%).** The model narrowed to 1 candidate correctly but guessed by name. The question strategy was unaffected by perturbation — the `get_top_candidates` → ID lookup was what broke.
+
+**Post-GRPO behavioral changes from trajectories:**
+
+1. **Skip and pivot.** When an attribute returns "unknown", the agent moves on. When `is_animal` is disabled, it tries `is_living` instead. When `is_food` is disabled, it tries `is_edible`. This is genuine behavioral adaptation — learning functional equivalences.
+
+2. **Heavy `get_top_candidates` usage.** Nearly every trajectory calls it at a strategic decision point (2-5 candidates). Multiple calls per game in ~30% of episodes.
+
+3. **Always guesses.** Zero timeouts. Even the one wrong guess (Chess, where 3+ category attributes were disabled simultaneously) submitted a guess rather than timing out.
+
+4. **Reduced but not eliminated hallucination.** Post-GRPO Coffee trajectory still tried `is_coffee` and `is_meat` (nonexistent attributes), but only after exhausting valid alternatives and only as a last resort.
+
+**Why 4c shows more genuine resilience than 4b:**
+
+The 4c confound is smaller than 4b's. In 4b, 90% of episodes had correct reasoning at baseline (format was the only issue). In 4c, 85% had correct reasoning — but the 3 genuine failures (catastrophic retry loops) represent a real behavior GRPO fixed. The pivot-to-alternative-attribute behavior (e.g., `is_animal` → `is_living`) is a genuine learned adaptation, not just format compliance.
+
+Additionally, 4c provides a stronger learning signal:
+- **Every blocked attribute produces an explicit "unknown" response** — clear, immediate cause-and-effect within a single turn.
+- **Attribute removal happens repeatedly** (~9 disabled attributes, model hits "unknown" 1-3 times per episode). Multiple recovery opportunities per trajectory.
+- **The recovery action is simple and local:** when you get "unknown," try a different attribute. For 4b's forced bad start, recovery requires global state awareness.
+
+**Skill acquisition (revised based on trajectories):**
+
+| Skill | Step 0 | Step 5 |
+|-------|--------|--------|
+| 1. Tool use | 20/20 | 20/20 |
+| 2. Sequencing | 17/20 | 20/20 |
+| 3. State awareness (`get_top_candidates`) | ~5/20 | ~17/20 |
+| 4. History tracking | poor (compulsive retries) | much better (skip and pivot) |
+| 5. Error detection (recognizes "unknown") | ~5/20 | ~17/20 |
+| 6. Recovery (switches to alternative attr) | 17/20 reasoning, 5/20 format | 20/20 reasoning, 17/20 format |
+
+**Interpretation:**
+
+The 4c result, like 4b, is inflated by the ID formatting confound. But 4c has a stronger genuine resilience signal:
+
+| What improved | Contribution to accuracy delta |
+|---|---|
+| ID format fix (name → ID guessing) | ~50% of the delta (12 episodes) |
+| Eliminating retry loops (3 timeouts → 0) | ~15% of the delta (3 episodes) |
+| True reasoning improvement (85% → 100%) | ~15% of the delta (3 episodes) |
+| Pivot to alternative attributes | Part of the reasoning improvement |
+
+The attribute-pivoting behavior (e.g., `is_food` disabled → `is_edible`) is the clearest example of GRPO teaching a behavioral adaptation pattern. It's simple, local, and reactive — exactly the kind of thing our thesis predicts GRPO can learn. But the headline 25% → 85% dramatically overstates the resilience learning. The true resilience delta is **85% → 100% reasoning accuracy + elimination of catastrophic loops.**
+
+**Cross-experiment summary (revised with format confound):**
+
+| Perturbation | Reported accuracy | True reasoning accuracy | GRPO delta |
+|---|---|---|---|
+| | Baseline → Post-GRPO | Baseline → Post-GRPO | (reasoning) |
+| 4a: Answer corruption | 10% → 5% | ~10% → ~5% | -5pp (degraded) |
+| 4b: Forced bad start | 15% → 80% | **90% → 100%** | **+10pp** |
+| 4c: Attribute removal | 25% → 85% | **85% → 100%** | **+15pp** |
+
+The true GRPO resilience deltas are +10pp and +15pp — meaningful but modest. The dramatic headline numbers (15% → 80%, 25% → 85%) are mostly GRPO re-learning the ID lookup ritual that broke under perturbation.
+
+**Environment design flaw:** `submit_guess()` requiring opaque 5-character IDs is an unnecessary indirection that artificially amplifies the effect of any perturbation. If it accepted object names (case-insensitive), baseline accuracies would be 90% and 85% respectively, and the GRPO improvement would be a clear +10-15pp in true reasoning — still a positive finding, but far less dramatic.
+
+**Cost:** ~$1.50 (5 GRPO steps + 2 evals)
+
+**Next:** Fix `submit_guess` to accept object names, then re-run baselines to measure the true resilience delta without the format confound. Full 50-step runs and SFT-perturbed controls pending this fix.
