@@ -911,3 +911,97 @@ The v2 results confirm the thesis direction with clean measurements:
 **Cost:** ~$1.50 each × 2 = ~$3.00
 
 **Next:** Full 50-step runs for 4b and 4c to see if the improvement continues or plateaus. Consider whether 4a (answer corruption) is worth re-running — the invisible perturbation may be fundamentally different from observable ones.
+
+## Run 4b/4c Full — 50-Step GRPO Runs — 2026-02-24
+
+**Hypothesis:** The +10pp (4b) and +25pp (4c) improvements observed in 5-step smoke tests will continue or plateau over 50 steps of GRPO training, demonstrating sustained resilience learning.
+
+**Setup:**
+- 50 GRPO steps, all 76 objects, batch size 6 (60 trajectories/step)
+- Eval at steps 0, 25, 50 + final eval (50 episodes)
+- Same SFT checkpoint (Run 2), seed 42
+- 4b: forced_bad_start, 4c: attribute_removal (rate=0.15)
+
+**Results: Both runs collapsed.**
+
+### Run 4b Full — Forced Bad Start
+
+| Metric | Step 0 | Step 25 | Step 50 (final, n=50) |
+|--------|--------|---------|------------------------|
+| Accuracy | 55% (11/20) | 15% (3/20) | **26% (13/50)** |
+| Wrong | 5 | 17 | 37 |
+| Timeout | 4 | 0 | 0 |
+| Avg questions | 11.8 | 5.6 | 6.1 |
+| Avg candidates remaining | 2.0 | 14.3 | 9.2 |
+
+Training trajectory (sampled steps):
+
+| Step | Correct rate | Reward | Avg questions | Failure mode |
+|------|-------------|--------|---------------|--------------|
+| 1 | 60% | +7.3 | 12.2 | Normal play |
+| 10 | **98%** | +16.7 | 10.3 | **Peak performance** |
+| 15 | 100% | +4.5 | 12.5 | Starting to overfit |
+| 20 | 98% | +6.7 | 11.6 | Questions declining |
+| 25 | 100% | **-7.5** | **6.2** | **Suicide guessing begins** |
+| 30 | 100% | -12.0 | 3.0 | Severe collapse |
+| 35 | 100% | -11.1 | 3.0 | Degenerate — guesses with ~20 candidates |
+| 40 | 98% | -6.3 | 7.4 | Partial recovery attempt |
+| 50 | 98% | -5.8 | 5.7 | Settled into early-guess pattern |
+
+**Collapse mechanism:** The agent learned that guessing immediately (even wrong) avoids the accumulated cost of asking questions. By step 25, questions dropped from 12 to 6 and reward went negative. The agent always guesses (100% guess rate by step 15) but with too many candidates remaining (14 at step 25 vs 2 at step 0). This is the **suicide-guess collapse** from Run 1.
+
+### Run 4c Full — Attribute Removal
+
+| Metric | Step 0 | Step 25 | Step 50 (final, n=50) |
+|--------|--------|---------|------------------------|
+| Accuracy | 60% (12/20) | 35% (7/20) | **0% (0/50)** |
+| Wrong | 4 | 8 | 0 |
+| Timeout | 4 | 5 | **50** |
+| Avg questions | 11.8 | 13.2 | **0.0** |
+| Avg candidates remaining | 2.2 | 4.6 | **76.0** |
+
+Training trajectory (sampled steps):
+
+| Step | Correct rate | Reward | Avg questions | Failure mode |
+|------|-------------|--------|---------------|--------------|
+| 1 | 80% | +2.5 | 12.4 | Normal play |
+| 10 | 75% | +9.5 | 10.8 | Improving |
+| 20 | 67% | +5.5 | 12.2 | Volatile |
+| 25 | 78% | +6.0 | 12.5 | Still functional |
+| 30 | 80% | -1.1 | 12.7 | Reward turns negative |
+| 35 | 100% | -10.6 | **5.2** | Rapid collapse |
+| 40 | 100% | -15.4 | **0.75** | Near-total collapse |
+| 45 | **0%** | 0.0 | **0.0** | **Complete policy death** |
+| 50 | 0% | 0.0 | 0.0 | Agent does nothing |
+
+**Collapse mechanism:** Two-phase collapse. Phase 1 (steps 30-40): Agent switches to suicide guessing, questions crash from 12→0.75. Phase 2 (steps 40-50): Agent stops doing anything entirely — 0 questions, 0 guesses, 76 candidates. This is the **timeout collapse** from Run 1 (safe haven effect: doing nothing incurs no negative reward).
+
+### Interpretation
+
+**The smoke tests captured a narrow sweet spot.** Both perturbation types showed genuine improvement in 5 steps (4b: +10pp, 4c: +25pp), but 50 steps of GRPO destroyed the SFT-learned behavior entirely. This reveals a fundamental limitation:
+
+1. **GRPO has a narrow training window on top of SFT.** ~5-10 steps of GRPO can refine the SFT policy (teaching resilience patterns like attribute pivoting). Beyond that, GRPO's reward optimization erodes the SFT-learned strategy and the model collapses to degenerate policies.
+
+2. **The collapse modes are identical to Run 1.** Suicide guessing (4b) and timeout/do-nothing (4c). The SFT checkpoint delays but doesn't prevent collapse. The underlying reward landscape has the same degenerate attractors regardless of starting point.
+
+3. **Peak performance was at ~step 10.** For 4b, step 10 showed 98% correct rate with reward +16.7. The model was genuinely better than baseline at this point. But GRPO kept optimizing past the sweet spot.
+
+4. **Attribute removal (4c) collapsed harder than forced bad start (4b).** 4c went to 0% (complete policy death) while 4b settled at ~26% (degenerate but not dead). The noisier environment (4c) provides noisier reward signal, accelerating collapse.
+
+**Revised thesis:** "GRPO can teach resilience in a narrow training window (~5-10 steps from an SFT checkpoint), but extended training leads to the same policy collapse observed in Run 1. The SFT checkpoint provides a better starting point but doesn't change the reward landscape's degenerate attractors. Practical use of GRPO for resilience requires early stopping or curriculum design to prevent collapse."
+
+**Implications for the broader thesis:**
+- GRPO's value is as a **brief refinement pass**, not extended training
+- The resilience improvements from the smoke tests are real but fragile
+- Without early stopping or a modified reward function, GRPO reliably finds and exploits degenerate policies
+- This explains why the smoke tests (5 steps) showed improvement while full runs (50 steps) showed collapse — the sweet spot is narrow
+
+**Cost:** ~$25 total (both runs)
+
+**Next:** This likely concludes the experimental phase. The key findings across all runs:
+1. GRPO from scratch → collapse (Run 1)
+2. SFT teaches strategy (Run 2)
+3. Pretraining already has reasoning (Run 3)
+4. GRPO can briefly teach resilience (~5-10 steps) but collapses with extended training (Run 4)
+
+Consider: Would a modified reward function (e.g., entropy bonus, KL penalty from SFT reference) prevent collapse? That's a natural follow-up but may be out of scope/budget.
