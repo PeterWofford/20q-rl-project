@@ -1014,7 +1014,7 @@ Consider: Would a modified reward function (e.g., entropy bonus, KL penalty from
 
 > "GRPO reliably acquires behavioral patterns but cannot acquire novel algorithmic reasoning from reward signal alone. RL refines execution — it doesn't teach reasoning."
 
-After four experiment families (10+ individual runs) on a controlled testbed where the optimal strategy is known, we can refine this thesis into three sharper claims with empirical support for each.
+After five experiment families (14+ individual runs) on a controlled testbed where the optimal strategy is known, we can refine this thesis into four sharper claims with empirical support for each.
 
 ### Claim 1: Strategy comes from pretraining or SFT, never from GRPO
 
@@ -1028,7 +1028,7 @@ GRPO never taught the agent *which* questions to ask or *how* to narrow candidat
 
 The core issue is that optimal 20Q play is a dynamic programming problem — the right question depends on the full state of remaining candidates. GRPO provides trajectory-level reward, not per-step supervision. It can learn "asking questions is good" but not "this specific attribute maximally bisects 43 remaining candidates."
 
-### Claim 2: GRPO can teach behavioral resilience — but only briefly
+### Claim 2: GRPO can teach behavioral resilience — but only briefly (with default hyperparameters)
 
 | Perturbation | Baseline | Post-GRPO (5 steps) | Post-GRPO (50 steps) |
 |---|---|---|---|
@@ -1043,7 +1043,7 @@ GRPO taught genuine behavioral adaptations in the first ~5-10 steps:
 
 These are exactly the kinds of patterns the thesis predicts GRPO can learn: local, reactive, behavioral. They don't require understanding the decision tree or reasoning about information theory — just responding to observable signals.
 
-But extended training (50 steps) destroyed all of it. Both runs collapsed to the same degenerate attractors as Run 1: suicide guessing (4b) or complete inaction (4c). The SFT starting point delayed collapse by ~15-25 steps but didn't prevent it.
+With default hyperparameters, extended training (50 steps) destroyed all of it. Both runs collapsed to the same degenerate attractors as Run 1: suicide guessing (4b) or complete inaction (4c). The SFT starting point delayed collapse by ~15-25 steps but didn't prevent it. However, Run 5 showed this collapse is not inevitable — see Claim 4.
 
 ### Claim 3: GRPO cannot teach error recovery that requires reasoning
 
@@ -1056,20 +1056,44 @@ Detecting answer corruption requires cross-referencing world knowledge against t
 
 This draws a clean boundary: GRPO can learn from **observable** perturbations with **local** recovery actions, but not from **invisible** perturbations requiring **global** reasoning.
 
+### Claim 4: Collapse is a step-size problem, not an algorithmic one
+
+Run 5 tested four single-variable GRPO interventions to prevent the collapse observed in all previous runs:
+
+| Variant | Intervention | Step 0 | Step 25 | Step 50 (final, 50obj) | Collapse? |
+|---------|-------------|--------|---------|------------------------|-----------|
+| run5a | PPO clipping | 70% | 45% | **46%** | Yes — timeout mode |
+| run5b | Tight GRPO clips | 65% | 5% | 0% | Yes — timeout (fastest) |
+| run5c | No reward scaling | 55% | **75%** | **74%** | **No** |
+| run5d | KL penalty (β=0.05) | 65% | 50% | 5% | Yes — instant guess |
+
+**Run5c (no reward scaling) is the first GRPO run in the entire project that didn't collapse.** It improved from 55% to 74% over 50 steps — sustained, stable improvement without degeneration.
+
+The mechanism: without reward scaling/normalization, raw advantages produce small gradient updates. This effectively limits how far the policy moves from SFT per step, preventing it from reaching the degenerate attractors. The near-zero gradients that looked concerning in smoke tests (flagged as "barely updating") turned out to be the protective mechanism.
+
+This reframes the collapse problem. It's not that GRPO is fundamentally broken for agentic tasks — it's that the default step size is too large. The reward landscape has strong degenerate attractors (instant guess, timeout) that are easy to reach with aggressive updates. The useful behavioral basin (ask good questions, then guess) requires staying close to SFT. Smaller updates achieve this.
+
+The three interventions that failed are instructive:
+- **PPO clipping** (run5a): Bounds the policy ratio but doesn't reduce gradient magnitude. The policy still moves fast within the clipped region.
+- **Tight GRPO clips** (run5b): Collapsed fastest despite having the "healthiest training dynamics" in smoke tests. Tighter clips didn't help because the problem is step size, not ratio bounds.
+- **KL penalty** (run5d): Slowed collapse (50% at step 25 vs. 5% for run5b) but couldn't prevent it. β=0.05 was too weak to overcome the attractor pull. A larger β might work but would further slow learning.
+
 ### The Refined Thesis
 
-> **GRPO is a brief refinement layer, not a training method.** It can polish SFT-learned behavior within a narrow window (~5-10 steps), teaching local behavioral adaptations like error pivoting and always-guess heuristics. It cannot teach strategy, cannot teach reasoning, and extended application destroys the very behaviors it initially improves. The practical recipe is: pretraining for reasoning capacity, SFT for strategy, and a carefully early-stopped GRPO pass for robustness.
+> **GRPO is a refinement layer, not a training method — but with the right step size, refinement is stable and sustained.** It cannot teach strategy or reasoning from scratch. With default hyperparameters, it destroys SFT-learned behavior within 15-25 steps. But with conservative updates (e.g., disabling reward scaling), it can stably improve SFT-trained agents over 50+ steps without collapse, reaching 74% accuracy from a 55% baseline. The practical recipe is: pretraining for reasoning capacity, SFT for strategy, and a conservatively-tuned GRPO pass for robustness — where "conservative" means controlling effective step size to prevent the policy from reaching degenerate attractors.
 
 ### The Collapse Problem
 
-The most consistent finding across all runs is that GRPO eventually collapses. Every run that exceeded ~15 steps exhibited one of two failure modes:
+The most consistent finding across Runs 1-4 was that GRPO eventually collapses. Every run with default hyperparameters that exceeded ~15 steps exhibited one of two failure modes:
 
 1. **Suicide guessing:** Agent learns that guessing immediately (even wrong) avoids the accumulated cost of asking questions. Questions drop to 0-3, candidates remaining jumps to 10-70.
 2. **Timeout/inaction:** Agent learns that doing nothing is safer than trying. Questions → 0, guesses → 0, reward → 0.
 
-These are degenerate attractors in the reward landscape. The SFT checkpoint provides a better starting point (the agent starts near optimal play, not random behavior), but the attractors are still there. Given enough GRPO steps, the optimizer finds them.
+These are degenerate attractors in the reward landscape. The SFT checkpoint provides a better starting point (the agent starts near optimal play, not random behavior), but the attractors are still there. With default update magnitudes, the optimizer finds them within 15-25 steps.
 
-This isn't unique to 20Q. Any RL setting with (a) a costly action sequence (asking questions), (b) sparse terminal reward (correct/wrong at end), and (c) a zero-cost default (do nothing) will have these attractors. The GRPO-specific issue is that trajectory-level reward provides no per-step credit assignment, so the optimizer can't distinguish "this question was useful" from "this question was wasteful."
+**Run 5 showed collapse is preventable.** Disabling reward scaling (run5c) produced small enough gradient updates that the policy never reached the degenerate attractors, sustaining stable improvement over 50 steps. Three other interventions (PPO clipping, tight GRPO clips, KL penalty) all still collapsed — the critical variable is effective step size, not clipping bounds or regularization terms.
+
+This reframes collapse from "an inherent GRPO limitation" to "a hyperparameter problem." The attractors still exist, but the policy doesn't have to reach them. The implication for practitioners: in agentic RL settings with costly action sequences and sparse terminal reward, default GRPO hyperparameters are dangerously aggressive. Conservative updates (unscaled rewards, lower learning rates, or equivalent) are essential for stability.
 
 ### Methodological Lessons
 
@@ -1080,6 +1104,8 @@ This isn't unique to 20Q. Any RL setting with (a) a costly action sequence (aski
 3. **Smoke tests before full runs.** The 5-step smoke tests captured the sweet spot and revealed the format confound. The 50-step full runs confirmed collapse. Running full experiments first would have cost 5× more and still needed smoke tests to diagnose the collapse. Always start small.
 
 4. **Silent failures are the default.** Run 2a's SFT model got 0% accuracy despite learning perfect question strategy — because it hallucinated object IDs. The expert iteration attempt (injecting oracle trajectories) showed 100% accuracy in logs but zero gradient updates. Metrics that look good require verification against actual behavior.
+
+5. **Short-horizon metrics don't predict long-horizon outcomes.** Run 5 smoke tests (5 steps) predicted run5b would succeed ("healthiest training dynamics") and run5c would fail ("near-zero gradients, barely updating"). The 50-step full runs showed the exact opposite. Gradient health at step 5 is not predictive of stability at step 50 — in fact, "healthy" large gradients were the mechanism of collapse, while "unhealthy" small gradients were protective. Always run the full experiment.
 
 ### Cost Summary
 
