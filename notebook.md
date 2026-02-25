@@ -1091,9 +1091,11 @@ This isn't unique to 20Q. Any RL setting with (a) a costly action sequence (aski
 | Run 4a | Answer corruption smoke test | ~$1.50 |
 | Run 4b | Forced bad start (smoke + full) | ~$14 |
 | Run 4c | Attribute removal (smoke + full) | ~$14 |
-| **Total** | | **~$65** |
+| Run 5 (smoke) | GRPO hyperparameter sweep (4 variants × 5 steps) | ~$6 |
+| Run 5 (full) | GRPO hyperparameter sweep (4 variants × 50 steps) | ~$60 |
+| **Total** | | **~$131** |
 
-Under the $150 budget cap, with ~$85 remaining.
+Under the $150 budget cap, with ~$19 remaining.
 
 ### What We Didn't Test
 
@@ -1110,3 +1112,107 @@ These are natural follow-ups that remain open:
 5. **Larger model.** Qwen-14B may lack the capacity for the reasoning required to detect answer corruption (4a) or replan globally (4c structural failures). A 70B+ model might show different failure boundaries.
 
 Each of these could extend the training window or prevent collapse entirely. But the current results already establish the boundary we set out to find: what GRPO can and can't learn from reward signal alone.
+
+---
+
+## Run 5 — GRPO Hyperparameter Sweep: Smoke Tests (2026-02-24)
+
+**Hypothesis:** Four single-variable GRPO interventions can prevent the policy collapse observed in all previous runs at 10-25 steps. Each targets a different mechanism: PPO clipping bounds, tighter GRPO epsilon, disabling reward scaling, and KL penalty from the SFT reference. Smoke tests validate that each intervention trains without errors before committing to expensive full runs.
+
+**Setup:** Qwen2.5-14B-Instruct, 5 GRPO steps, 20 objects, batch size 6, seed 42. Eval at steps 0 and 5. All from SFT checkpoint (run2-sft-v2). Clean environment (no perturbations). One variable changed per variant:
+
+| Variant | Intervention | Config Change |
+|---------|-------------|---------------|
+| run5a | PPO mode | `ppo=True` (clips ratio to [0.8, 1.2]) |
+| run5b | Tight GRPO clips | `epsilon=0.3, epsilon_high=1.0` (clips to [0.7, 2.0]) |
+| run5c | No reward scaling | `scale_rewards=False` (raw advantages, no normalization) |
+| run5d | KL penalty | `beta=0.05` (KL divergence penalty from SFT reference) |
+
+**Results:**
+
+| Variant | Baseline (Step 0) | Final (Step 5) | Collapsed? |
+|---------|-------------------|----------------|------------|
+| run5a (PPO) | 95% (19/20), 7.3 avg Q | 95% (19/20), 6.9 avg Q | No |
+| run5b (tight clips) | 95% (19/20), 8.4 avg Q | 95% (19/20), 8.9 avg Q | No |
+| run5c (no scaling) | 100% (20/20), 7.0 avg Q | 90% (18/20), 8.1 avg Q | No |
+| run5d (KL penalty) | 85% (17/20), 7.8 avg Q | 90% (18/20), 7.7 avg Q | No |
+
+**Gradient health observations:**
+- **run5a (PPO):** Large loss swings (-1.37 to +2.26) — volatile but active. Gradients are clearly nonzero.
+- **run5b (tight clips):** Moderate, healthy-looking gradients. Most stable training dynamics of the four.
+- **run5c (no scaling):** Near-zero gradients (loss ~0.01, grad_norm ~0.001-0.17). Effectively not learning. Raw advantages without normalization produce tiny gradient signal.
+- **run5d (KL penalty):** Small but nonzero gradients. KL term provides regularization as expected.
+
+**Cost:** ~$6 total (~$1.50 per variant).
+
+**Interpretation:** All four variants survived 5 steps without policy collapse — but 5 steps is well within the safe window (collapse historically occurs at 10-25 steps). The real test is the full 50-step runs. Key concern: run5c's near-zero gradients suggest it may not learn anything meaningful even over 50 steps, though it also may not collapse since it's barely updating. run5b shows the healthiest training dynamics and is the strongest candidate to extend the training window.
+
+**Next:** Full 50-step runs for all four variants (eval every 25 steps) to determine which interventions actually prevent collapse beyond the typical 10-25 step window.
+
+---
+
+## Run 5 — GRPO Hyperparameter Sweep: Full Runs (2026-02-24)
+
+**Hypothesis:** At least one of the four GRPO interventions (PPO clipping, tight epsilon, no reward scaling, KL penalty) can prevent the policy collapse that has occurred in every previous run at 10-25 GRPO steps.
+
+**Setup:** Qwen2.5-14B-Instruct, 50 GRPO steps, 20 objects for training, batch size 6, seed 42. Eval at steps 0, 25, and 50 (20 objects). Final eval at step 50 (50 objects). All from SFT checkpoint (run2-sft-v2). Clean environment (no perturbations). Same configs as smoke tests.
+
+**Results:**
+
+| Variant | Intervention | Step 0 | Step 25 | Step 50 (20obj) | Final (50obj) | Collapse? |
+|---------|-------------|--------|---------|-----------------|---------------|-----------|
+| run5a | PPO mode | 70% (14/20) | 45% (9/20) | 65% (13/20) | **46% (23/50)** | Yes — timeout mode (27/50 timeouts) |
+| run5b | Tight clips | 65% (13/20) | 5% (1/20) | 0% (0/20) | — | Yes — timeout mode (fastest collapse) |
+| run5c | No scaling | 55% (11/20) | **75% (15/20)** | **70% (14/20)** | **74% (37/50)** | **No — survived 50 steps** |
+| run5d | KL penalty | 65% (13/20) | 50% (10/20) | 5%→0% | — | Yes — instant wrong guess mode |
+
+**Detailed eval metrics:**
+
+| Variant | Step 50 Wrong | Step 50 Timeout | Step 50 Avg Q | Step 50 Avg Candidates |
+|---------|--------------|----------------|---------------|----------------------|
+| run5a | 0 | 7 | 10.1 | 1.6 |
+| run5b | 20 | 0 | — | — |
+| run5c | 6 | 0 | 10.7 | 1.8 |
+| run5d | 19-20 | 0-1 | — | — |
+
+**Key findings:**
+
+1. **Run5c (no reward scaling) is the only survivor.** It improved from 55% → 75% at step 25, settling at 70-74% by step 50. This is the first GRPO run in the entire project that didn't collapse. On the 50-object final eval: 74% accuracy with 10 wrong and 3 timeouts.
+
+2. **The smoke test predictions were completely wrong.** Run5b had the "healthiest training dynamics" in smoke tests but collapsed fastest (by step 25). Run5c had "near-zero gradients" and was flagged as "barely updating" but was the only one to survive. The irony: not learning aggressively IS the mechanism that prevents collapse. The near-zero gradients weren't a bug — they were the feature.
+
+3. **Two distinct collapse modes persisted:**
+   - **Timeout collapse** (run5a, run5b): Agent learns that doing nothing is safer than asking questions. Run5a had 27/50 timeouts in final eval.
+   - **Instant wrong guess** (run5d): Agent learns to guess immediately without asking questions. Despite the KL penalty supposedly anchoring to the SFT policy, the agent still drifted to degenerate behavior.
+
+4. **PPO mode (run5a) showed partial collapse with recovery.** It dropped from 70% → 45% at step 25 (11 timeouts) but partially recovered to 65% at step 50 on 20 objects. However, the 50-object final eval revealed the true picture: 46% with 27 timeouts. The 20-object eval was misleadingly optimistic.
+
+5. **KL penalty (run5d) failed despite direct address.** beta=0.05 KL penalty was supposed to prevent the policy from wandering too far from SFT. It slowed collapse (still at 50% at step 25) but couldn't prevent it. The collapse attractor is stronger than moderate KL regularization.
+
+**Gradient health analysis (run5c success):**
+
+Run5c's near-zero gradients in smoke tests turned out to be protective. Without reward scaling/normalization, the raw advantages produce small gradient updates, effectively limiting how far the policy can move from SFT per step. This is mechanistically similar to a very small learning rate — the model barely updates, so it can't reach the collapse attractor. The 55% → 74% improvement over 50 steps shows it IS learning, just slowly enough to stay stable.
+
+Run5a (PPO) showed very large loss swings (-1.93 to +2.06 at step 49), consistent with the volatile training that eventually leads to collapse.
+
+**Training statistics:**
+- run5a: 49/50 steps successful (1 failed: W&B connection error)
+- run5b: 50/50 steps successful
+- run5c: 50/50 steps successful
+- run5d: 50/50 steps successful
+
+**Cost:** ~$60 estimated total (~$15 per variant). Running total: ~$131.
+
+**Interpretation:**
+
+The result is both surprising and instructive. The intervention that worked wasn't a clever algorithmic fix — it was simply reducing the learning rate (effectively) by not scaling rewards. This suggests the fundamental problem with GRPO in this setting isn't the algorithm but the step size: the policy moves too fast toward degenerate attractors before it can learn useful behavior.
+
+This reframes the thesis slightly: GRPO's failure to learn strategy from scratch (Run 1) and its tendency to collapse post-SFT aren't two separate problems. They're both manifestations of the same issue: the reward landscape has strong degenerate attractors (instant guess, timeout) that are easy to find with large updates, while the useful behavioral basin (ask good questions, then guess) is harder to stay in. Smaller updates let the policy explore the useful basin without falling into a degenerate one.
+
+**W&B runs:**
+- run5a: https://wandb.ai/petw-bytedance/art-20q-runner-2026/runs/run5a-full-seed42
+- run5b: https://wandb.ai/petw-bytedance/art-20q-runner-2026/runs/run5b-full-seed42
+- run5c: https://wandb.ai/petw-bytedance/art-20q-runner-2026/runs/run5c-full-seed42
+- run5d: https://wandb.ai/petw-bytedance/art-20q-runner-2026/runs/run5d-full-seed42
+
+**Next:** The immediate question is whether run5c's stability extends further — would 100 or 200 steps continue to improve, or is 74% the ceiling? Also, can we combine no-scaling with a slightly larger effective learning rate (e.g., more training steps per GRPO step) to get both stability and faster learning? Finally, the original error-recovery experiments (Run 4) should be retried with the no-scaling config to see if stability + perturbation produces the resilience result we were looking for.
